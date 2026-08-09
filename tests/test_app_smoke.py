@@ -4,9 +4,13 @@
 context_text 생성까지 에러 없이 동작하는지 확인한다.
 """
 
+import pytest
 from streamlit.testing.v1 import AppTest
 
+from src.database.connection import check_connection
+
 APP_TIMEOUT = 20
+_DB_CONNECTED, _ = check_connection()
 
 
 def test_dashboard_loads_without_error():
@@ -44,3 +48,16 @@ def test_column_mapping_builds_context_text():
 
     assert not at.exception
     assert any("context_text" in s.value for s in at.success)
+
+
+@pytest.mark.parametrize("page_name", ["금융기관 Master", "Alias Master", "Database 상태"])
+def test_db_pages_load_without_crashing(page_name):
+    """PostgreSQL이 연결되어 있지 않아도 이 화면들이 에러 없이 '연결 필요' 안내를 보여줘야 한다."""
+    at = AppTest.from_file("app.py")
+    at.run(timeout=APP_TIMEOUT)
+    at.sidebar.radio[0].set_value(page_name).run(timeout=APP_TIMEOUT)
+
+    assert not at.exception
+    if not _DB_CONNECTED:
+        messages = [w.value for w in at.warning] + [e.value for e in at.error]
+        assert any("PostgreSQL" in m or "Not Connected" in m or "연결" in m for m in messages)

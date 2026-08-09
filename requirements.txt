@@ -1,9 +1,13 @@
-# Phase 1 dependencies only.
-# Later phases will add: sqlalchemy, psycopg (PostgreSQL driver), rapidfuzz,
-# sentence-transformers, scikit-learn, pytest — added when each phase actually needs them.
+# Phase 1 + Phase 2 dependencies.
+# Later phases will add: rapidfuzz, sentence-transformers, scikit-learn — added when each phase actually needs them.
 
 streamlit==1.38.0
 polars==1.9.0
 openpyxl==3.1.5
 PyYAML==6.0.2
 python-dotenv==1.0.1
+pytest==9.1.1
+
+# Phase 2: PostgreSQL 연결
+SQLAlchemy==2.0.35
+psycopg[binary]==3.2.3
