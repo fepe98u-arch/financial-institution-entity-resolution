@@ -43,8 +43,9 @@ def test_resolve_does_not_confirm_negative_examples():
 
 def test_apply_normalization_adds_columns_and_preserves_original():
     df = pl.DataFrame({"거래처": ["NH농협은행", "농은", "테스트전자"], "금액": [1000, 2000, 3000]})
-    result = apply_normalization(df, "거래처", _institutions(), THRESHOLD)
+    result, error = apply_normalization(df, "거래처", _institutions(), THRESHOLD, use_embedding=False)
 
+    assert error is None
     assert "거래처" in result.columns
     assert "금액" in result.columns
     assert "canonical_institution" in result.columns
@@ -57,6 +58,6 @@ def test_apply_normalization_adds_columns_and_preserves_original():
 
 def test_apply_normalization_broadcasts_to_repeated_rows():
     df = pl.DataFrame({"거래처": ["농은", "농은", "농은"], "금액": [1, 2, 3]})
-    result = apply_normalization(df, "거래처", _institutions(), THRESHOLD)
+    result, _ = apply_normalization(df, "거래처", _institutions(), THRESHOLD, use_embedding=False)
 
     assert result["canonical_institution"].unique().to_list() == ["NH농협은행"]

@@ -86,21 +86,21 @@ def page_dashboard():
 
     result_df = st.session_state.normalized_df
     if result_df is None:
-        st.caption(
-            "'금융기관 정규화' 메뉴에서 정규화를 실행하면 FAST PATH 처리 건수가 여기에 표시됩니다. "
-            "AI PATH(Embedding) 관련 수치는 아직 구현되지 않아 표시하지 않습니다."
-        )
+        st.caption("'금융기관 정규화' 메뉴에서 정규화를 실행하면 방법별 처리 건수가 여기에 표시됩니다.")
         return
 
     method_counts = result_df.group_by("normalization_method").len().sort("normalization_method")
-    st.subheader("정규화 결과 (FAST PATH만, 실제 계산값)")
+    st.subheader("정규화 결과 (방법별 건수, 실제 계산값)")
     st.dataframe(method_counts, use_container_width=True)
     auto_count = result_df.filter(pl.col("review_status") == "AUTO").height
     needs_review_count = result_df.filter(pl.col("review_status") == "NEEDS_REVIEW").height
     col3, col4 = st.columns(2)
-    col3.metric("자동 정규화(AUTO)", f"{auto_count:,}")
+    col3.metric("자동 정규화(AUTO, FAST PATH만)", f"{auto_count:,}")
     col4.metric("검토 필요(NEEDS_REVIEW)", f"{needs_review_count:,}")
-    st.caption("Embedding/Context Reranking 처리 건수는 아직 없습니다 (Phase 4~5에서 구현).")
+    st.caption(
+        "EMBEDDING 방법으로 표시된 건도 review_status=NEEDS_REVIEW입니다 — 문맥 재평가(Context "
+        "Reranking)가 없는 상태에서는 Embedding 결과를 자동 확정하지 않습니다 (Phase 5에서 보완 예정)."
+    )
 
 
 def page_upload():
@@ -186,10 +186,13 @@ def page_column_mapping():
 
 
 def page_normalization():
-    st.title("금융기관 정규화 (FAST PATH)")
+    st.title("금융기관 정규화 (FAST PATH + Embedding)")
     st.caption(
-        "Exact Match → Alias Match → Fuzzy Match 순서로만 처리합니다 (Embedding/AI PATH는 아직 없음, Phase 4~5). "
-        "명확히 일치하지 않는 표현은 UNRESOLVED로 남습니다."
+        "1) Exact Match → Alias Match → Fuzzy Match (FAST PATH) 순서로 시도합니다. "
+        "2) 여기서 확정하지 못한 표현만 Embedding(AI PATH)으로 다시 시도합니다. "
+        "Embedding 결과는 점수가 높아도 자동 확정하지 않고 항상 '검토 필요'로 표시합니다 — "
+        "문맥 재평가(Context Reranking)가 아직 없어서, 'OO농협'처럼 이름만 비슷한 경우를 "
+        "잘못 자동 확정할 위험이 있기 때문입니다 (Phase 5에서 보완 예정)."
     )
 
     df = st.session_state.journal_df
@@ -203,7 +206,13 @@ def page_normalization():
 
     vendor_column = mapping["vendor"]
     threshold = get_fuzzy_auto_threshold()
+    use_embedding = st.checkbox("Embedding(AI PATH) 사용", value=True)
     st.caption(f"Fuzzy 자동 정규화 threshold: {threshold:.1f}점 (config/model_config.yaml에서 조정 가능)")
+    if use_embedding:
+        st.caption(
+            "최초 실행 시 임베딩 모델(약 470MB)을 다운로드합니다. 인터넷이 필요하며, "
+            "이후에는 로컬에 캐시되어 오프라인으로 동작합니다."
+        )
 
     if st.button("정규화 실행"):
         session = get_session()
@@ -217,9 +226,14 @@ def page_normalization():
             st.warning("등록된 금융기관이 없습니다. '금융기관 Master' 메뉴에서 먼저 등록하세요.")
             return
 
-        result_df = apply_normalization(df, vendor_column, institutions, threshold)
+        with st.spinner("정규화 실행 중..."):
+            result_df, embedding_error = apply_normalization(
+                df, vendor_column, institutions, threshold, use_embedding=use_embedding
+            )
         st.session_state.normalized_df = result_df
-        st.success(f"{result_df.height:,}행에 대해 FAST PATH 정규화를 완료했습니다.")
+        if embedding_error:
+            st.warning(embedding_error)
+        st.success(f"{result_df.height:,}행에 대해 정규화를 완료했습니다.")
 
     result_df = st.session_state.normalized_df
     if result_df is not None:

@@ -86,4 +86,4 @@ def test_normalization_end_to_end_via_ui():
     at.button[0].click().run(timeout=APP_TIMEOUT)  # 정규화 실행
 
     assert not at.exception
-    assert any("FAST PATH 정규화를 완료" in s.value for s in at.success)
+    assert any("정규화를 완료" in s.value for s in at.success)

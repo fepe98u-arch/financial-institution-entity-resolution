@@ -1,5 +1,5 @@
-# Phase 1 + Phase 2 + Phase 3 dependencies.
-# Later phases will add: sentence-transformers, scikit-learn — added when each phase actually needs them.
+# Phase 1 + Phase 2 + Phase 3 + Phase 4 dependencies.
+# Later phases will add: scikit-learn — added when each phase actually needs it.
 
 streamlit==1.38.0
 polars==1.9.0
@@ -14,3 +14,9 @@ psycopg[binary]==3.2.3
 
 # Phase 3: 유사도(fuzzy) 매칭
 rapidfuzz==3.9.7
+
+# Phase 4: Embedding (CPU 전용, 외부 API 아님)
+# torch는 CPU 전용 wheel을 쓰기 위해 별도 index에서 먼저 설치해야 한다:
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch==2.13.0
+# (index를 지정하지 않으면 훨씬 큰 CUDA 포함 버전이 설치될 수 있다)
+sentence-transformers==3.0.1
