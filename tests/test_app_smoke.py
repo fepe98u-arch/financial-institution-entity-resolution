@@ -87,3 +87,39 @@ def test_normalization_end_to_end_via_ui():
 
     assert not at.exception
     assert any("정규화를 완료" in s.value for s in at.success)
+
+
+@pytest.mark.skipif(not _DB_CONNECTED, reason="PostgreSQL 연결 없이는 Human Review 화면을 끝까지 테스트할 수 없어 건너뜁니다.")
+def test_human_review_approve_via_ui():
+    """정규화 실행 후 Human Review 화면에서 승인 버튼까지 눌러서 실제로 반영되는지 확인한다."""
+    at = AppTest.from_file("app.py")
+    at.run(timeout=APP_TIMEOUT)
+
+    at.sidebar.radio[0].set_value("금융기관 Master").run(timeout=APP_TIMEOUT)
+    at.button[0].click().run(timeout=APP_TIMEOUT)
+
+    at.sidebar.radio[0].set_value("분개장 업로드").run(timeout=APP_TIMEOUT)
+    at.button[0].click().run(timeout=APP_TIMEOUT)
+
+    at.sidebar.radio[0].set_value("컬럼 Mapping").run(timeout=APP_TIMEOUT)
+    at.selectbox[2].set_value("거래처").run(timeout=APP_TIMEOUT)
+    at.selectbox[3].set_value("적요").run(timeout=APP_TIMEOUT)
+    at.selectbox[4].set_value("계정과목").run(timeout=APP_TIMEOUT)
+    at.selectbox[5].set_value("상대계정").run(timeout=APP_TIMEOUT)
+    at.button[0].click().run(timeout=APP_TIMEOUT)
+
+    at.sidebar.radio[0].set_value("금융기관 정규화").run(timeout=APP_TIMEOUT)
+    at.button[0].click().run(timeout=APP_TIMEOUT)
+
+    at.sidebar.radio[0].set_value("Human Review").run(timeout=APP_TIMEOUT)
+    assert not at.exception
+
+    if not at.radio:
+        # 검토 필요 항목이 하나도 없는 드문 경우 (샘플 데이터 특성상 거의 발생하지 않음)
+        return
+
+    at.radio[0].set_value("승인 (제안 기관으로 확정)").run(timeout=APP_TIMEOUT)
+    at.button[0].click().run(timeout=APP_TIMEOUT)
+
+    assert not at.exception
+    assert any("반영했습니다" in s.value for s in at.success)

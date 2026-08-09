@@ -2,3 +2,10 @@
 # 이 threshold는 공식 감사기준이 아니라, 실제 검증 데이터로 조정해야 하는 값이다.
 fuzzy_matching:
   auto_threshold: 90.0 # 이 점수(0~100) 이상이면 자동 정규화, 미만이면 검토 필요
+
+# Phase 5: 문맥 재평가(Context Reranking) 설정.
+# 실측 결과("농협"이 NH농협은행과 raw embedding 0.909, "OO농협"은 0.868로 매우
+# 가까움)에 따라, embedding 점수만으로는 자동 확정하지 않는다. 아래 embedding_floor는
+# "금융 관련 키워드가 문맥에 있고, 혼동 방지 키워드가 없을 때만" 적용되는 최소 기준이다.
+context_rerank:
+  embedding_floor: 0.85

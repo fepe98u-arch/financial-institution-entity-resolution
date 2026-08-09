@@ -26,53 +26,57 @@ Context-Aware Financial Institution Entity Resolution
 확정"하지 않습니다. 최종 판단은 항상 감사인이 합니다. 이 프로그램은 "빠뜨리기
 쉬운 후보를 찾아 보여주는" 보조 도구입니다.
 
-## 지금 실제로 되는 것 / 안 되는 것 (Phase 4 기준)
+## 지금 실제로 되는 것 / 안 되는 것 (Phase 5 기준)
 
 **실제로 구현되어 동작하는 기능**
-- 분개장 CSV/Excel 파일 업로드 (Polars로 읽음)
-- 실제 데이터가 없을 때 테스트해 볼 수 있는 가상 샘플 데이터 생성
-- 회사마다 다른 컬럼명(거래처/적요/계정과목/상대계정 등)을 화면에서 직접
-  선택해서 매핑, 매핑한 컬럼들을 합친 문맥 텍스트(context_text) 생성
-- PostgreSQL이 이 컴퓨터에 실제로 설치되어 연결되어 있습니다 (winget으로
-  무인 설치). 금융기관 Master / Alias Master / Database 상태 화면이 실제
-  DB로 동작함을 확인했습니다.
-- **FAST PATH 금융기관 정규화** (Exact Match → Alias Match → Fuzzy Match):
-  등록된 표준명/별칭과 완전히 같으면 즉시 확정하고, 아니면 rapidfuzz 유사도가
-  90점(기본값) 이상일 때만 자동 확정합니다.
-  - 300,000행을 한 줄씩 반복하지 않습니다. 거래처 표현의 **고유값만** 매칭한
-    뒤 Polars join으로 전체 행에 결과를 broadcast합니다.
-- **AI PATH: Embedding 기반 후보 검색** (FAST PATH로 확정 못한 표현만 대상):
-  다국어 문장 임베딩 모델(`paraphrase-multilingual-MiniLM-L12-v2`)을 로컬에서
-  실행해서, 금융기관 표준명/별칭과의 코사인 유사도로 Top-2 후보를 찾습니다.
-  외부 API를 호출하지 않으며, 모델은 최초 1회만 다운로드하고 이후에는
-  오프라인으로 동작합니다.
-  - **중요한 설계 결정(실측 근거 있음)**: Embedding 결과는 점수가 높아도
-    **절대 자동 확정하지 않습니다.** 실제로 이 모델로 "OO농협"과
-    "NH농협은행"의 유사도를 계산하면 0.8점대(0~1 척도)가 나옵니다 — 글자가
-    비슷하기 때문입니다. 문맥(적요/계정과목)을 보지 않는 상태에서 이 점수만
-    믿고 자동 정규화하면, 계획서 1번 섹션에서 경고한 바로 그 오류(농산물
-    구매처를 은행으로 착각)가 발생합니다. 그래서 Phase 4의 Embedding 결과는
-    전부 `review_status = NEEDS_REVIEW`로만 표시하고, Phase 5에서 문맥
-    재평가(Context Reranking)가 붙기 전까지는 자동 확정을 허용하지 않습니다.
-  - Embedding 모델을 불러올 수 없으면(인터넷 없음 등) 예외로 앱이 죽지 않고,
-    FAST PATH 결과만으로 계속 동작하며 화면에 경고를 표시합니다.
-- Dashboard에 정규화 방법별 건수(EXACT/ALIAS/FUZZY/EMBEDDING/UNRESOLVED),
-  자동 확정/검토 필요 건수를 실제 계산값으로 표시
-- pytest 자동 테스트 38개 (아래 "테스트 실행 결과" 참고)
+- 분개장 CSV/Excel 파일 업로드, 컬럼 매핑, context_text 생성 (Phase 1)
+- PostgreSQL 연결 + 금융기관 Master/Alias Master 관리 (Phase 2)
+- **FAST PATH** (Exact Match → Alias Match → Fuzzy Match, Phase 3): 등록된
+  표준명/별칭과 완전히 같으면 즉시 확정, rapidfuzz 유사도가 90점(기본값)
+  이상이면 자동 확정. 고유 거래처 표현만 매칭 후 Polars join으로 전체 행에
+  broadcast (300,000행 반복 없음).
+- **AI PATH: Embedding 기반 후보 검색** (Phase 4): FAST PATH로 확정 못한
+  표현만 다국어 임베딩 모델(`paraphrase-multilingual-MiniLM-L12-v2`, 로컬
+  실행)로 후보를 찾음.
+- **Context Reranking** (Phase 5, 신규): context_text가 있으면 Embedding
+  후보를 문맥으로 재평가합니다. 규칙은 가중합 점수가 아니라 조건으로
+  판단합니다 (왜 확정했는지 숨김없이 설명하기 위해):
+  1. 문맥에 이 기관의 혼동 방지 키워드(예: "농산물","원재료","유통","증권")가
+     하나라도 있으면 → **절대 자동 확정하지 않음** (거부권).
+  2. 혼동 방지 키워드가 없고, 금융 키워드(예: "대출","이자","예금")가 있고,
+     Embedding 유사도가 0.85(기본값) 이상이면 → 자동 확정.
+  3. 그 외(근거 부족)에는 → 검토 필요로 남김.
+  - **실제로 이 규칙으로 실측 검증**: 같은 거래처 "농협"이라도
+    "운영자금 대출이자 지급" 문맥에서는 자동 확정되고, "농산물 구매대금
+    지급" 문맥에서는 검토 필요로 남는 것을 테스트로 확인했습니다 — 계획서
+    1번 섹션의 핵심 예시 그대로입니다.
+- **중요한 버그를 실측으로 발견하고 수정함**: "농협"은 짧아서 rapidfuzz로도
+  "NH농협" 별칭과 유사도 90점이 나와, **문맥과 무관하게 FAST PATH에서 먼저
+  자동 확정**될 수 있었습니다 (Context Rerank는 UNRESOLVED된 것만 처리하므로
+  개입할 기회가 없었음). 그래서 Fuzzy로 자동 확정된 결과에도 혼동 방지
+  키워드 거부권을 별도로 적용하는 안전장치를 추가했습니다
+  (`_apply_fuzzy_negative_keyword_veto`).
+- **Human Review 화면**: 검토 필요 항목을 원문/문맥/추천 기관/Top1·Top2
+  점수/판단 근거와 함께 보여주고, "승인 / 다른 기관으로 변경 / 금융기관
+  아님 / 판단 보류" 중 하나를 선택해 반영할 수 있습니다.
+- Dashboard에 정규화 방법별 건수(EXACT/ALIAS/FUZZY/EMBEDDING/CONTEXT_RERANK/
+  HUMAN/UNRESOLVED), 자동 확정/검토 필요 건수를 실제 계산값으로 표시
+- pytest 자동 테스트 53개 (아래 "테스트 실행 결과" 참고)
 
 **아직 구현되지 않은 기능**
-- 문맥 재평가(Context Reranking): 적요/계정과목/상대계정을 보고 Embedding
-  후보를 다시 평가해서, 점수가 높아도 문맥이 안 맞으면 걸러내는 기능. 지금
-  Embedding은 거래처 이름만 보고 판단하므로 "OO농협" 같은 사례에서 위와 같이
-  실제로 오판할 수 있습니다 — 이게 바로 Phase 5가 필요한 이유입니다.
-- Human Review 화면과 저장, Feedback 축적
-- 회사 제출 금융기관 목록과의 완전성 비교
-- normalization_results/candidate_scores 등 분석결과를 PostgreSQL에 저장하는
-  기능 (지금은 화면에서만 보여주고 DB에 저장하지 않음 — Phase 5~6에서 추가)
+- Human Review에서 내린 판단을 PostgreSQL(human_reviews 테이블)에 저장하는
+  기능 — 지금은 화면 세션에만 반영되고, 새로고침하면 사라집니다 (Phase 6)
+- Feedback Label 축적, 향후 모델 개선용 데이터 저장 (Phase 6)
+- 회사 제출 금융기관 목록과의 완전성 비교 (Phase 7)
+- normalization_results/candidate_scores를 PostgreSQL에 저장하는 기능 (지금은
+  화면에서만 보여주고 DB에 저장하지 않음)
+- Cross-Encoder 재순위화 — Context Reranking은 실제 Cross-Encoder가 아니라
+  키워드 규칙 기반 Fallback입니다 (계획서 21번 섹션이 허용하는 방식이며,
+  이 README와 코드 모두에서 Cross-Encoder를 썼다고 주장하지 않습니다)
 - 대용량(10만/30만 건) 성능 테스트, Excel 결과 다운로드
 - 모델 성능(Accuracy/Precision/Recall, False Normalization Rate 등) 평가
 
-이 문서 뒤쪽의 "다음 단계"에 Phase 5부터의 계획이 있습니다.
+이 문서 뒤쪽의 "다음 단계"에 Phase 6부터의 계획이 있습니다.
 
 ## 왜 이런 기술을 쓰는가 (비개발자용 설명)
 
@@ -101,16 +105,17 @@ Context-Aware Financial Institution Entity Resolution
 모델을 부르는 것은 느리고 낭비입니다. 그래서:
 
 1. 먼저 정확히 일치하는지, 미리 등록된 별칭 목록에 있는지, 유사도가 아주
-   높은지를 빠르게 확인합니다 (FAST PATH: Exact → Alias → Fuzzy, Phase 3에서
-   구현 완료). 이 세 가지는 AI 모델을 부르지 않습니다.
+   높은지를 빠르게 확인합니다 (FAST PATH: Exact → Alias → Fuzzy, Phase 3).
+   이 세 가지는 AI 모델을 부르지 않습니다.
 2. 이 세 가지로도 확정하지 못한 표현만 AI(Embedding)로 넘깁니다 (AI PATH,
-   Phase 4에서 구현 완료). 다만 Embedding 결과는 아직 자동 확정하지 않고
-   전부 검토 대상으로만 표시합니다 (문맥 재평가가 없는 상태라 위험하기
-   때문 — 위 "지금 실제로 되는 것" 참고).
-3. 고유한 거래처 표현마다 한 번씩만 매칭/임베딩합니다 (300,000행을 반복하지
-   않음). 다만 "농협"처럼 문맥에 따라 뜻이 달라질 수 있는 표현을 문맥까지
-   고려해서 다르게 캐싱하는 것은 아직 구현하지 않았습니다 (Phase 5에서
-   문맥 재평가가 들어가면 함께 정리할 부분입니다).
+   Phase 4).
+3. context_text가 있으면 문맥(적요/계정과목 등)의 키워드로 Embedding 후보를
+   재평가합니다 (Context Reranking, Phase 5). 이 단계에서 확정된 것만
+   review_status='AUTO'가 되고, 근거가 부족하면 검토 필요로 남습니다.
+4. 고유한 (거래처, context_text) 조합마다 한 번씩만 매칭/임베딩합니다
+   (300,000행을 반복하지 않음). "농협"처럼 같은 거래처명이라도 문맥이
+   다르면 별도로 처리됩니다 — 이게 바로 "문맥에 따라 캐시 키를 다르게
+   한다"는 계획서 28번 섹션의 내용입니다.
 
 ## 폴더 구조
 
@@ -129,7 +134,9 @@ src/alias_matcher.py            Exact/Alias 매칭 (Phase 3)
 src/fuzzy_matcher.py            rapidfuzz 유사도 매칭 (Phase 3)
 src/embedding_service.py        임베딩 모델 로딩/인코딩 (Phase 4)
 src/candidate_retriever.py      Embedding 기반 후보 검색 (Phase 4)
-src/normalization_pipeline.py   FAST PATH + AI PATH 파이프라인, Polars broadcast
+src/context_reranker.py         문맥 기반 재평가 규칙 (Phase 5)
+src/human_review.py             Human Review 판단 반영 (Phase 5, DB 저장은 Phase 6)
+src/normalization_pipeline.py   FAST PATH + AI PATH + Context Rerank 파이프라인
 tests/                          pytest 자동 테스트
 ```
 
@@ -160,7 +167,8 @@ tests/                          pytest 자동 테스트
    3. "컬럼 Mapping" → 거래처 등 컬럼 선택 → "context_text 생성"
    4. "금융기관 정규화" → (처음 한 번은 임베딩 모델 다운로드로 몇 분 걸릴 수
       있음) "정규화 실행" 버튼 → 결과 미리보기
-   5. "Dashboard" → 방법별 처리 건수 확인
+   5. "Human Review" → 검토 필요 항목을 확인하고 승인/변경/보류 처리
+   6. "Dashboard" → 방법별 처리 건수 확인
 
 ## 테스트 실행 방법 / 결과
 
@@ -168,24 +176,25 @@ tests/                          pytest 자동 테스트
 .venv\Scripts\pytest -v
 ```
 
-**실제로 실행한 결과 (2026-08-09 기준)**: 38개 전부 통과 (`38 passed`).
+**실제로 실행한 결과 (2026-08-09 기준)**: 53개 전부 통과 (`53 passed`).
 
-- DB 연결 3개 테스트, FAST PATH 매칭(Exact/Alias/Fuzzy), 화면 흐름 전체
-  (마스터 시딩 → 샘플 생성 → 컬럼 매핑 → 정규화 실행, Embedding 포함)까지
-  실제 PostgreSQL + 실제 임베딩 모델로 확인했습니다.
-- "OO농협", "농협유통", "NH투자"가 FAST PATH만으로는 자동 확정되지 않는지
-  (rapidfuzz 45~60점, threshold 90점 미만), **그리고 Embedding 단독으로도
-  이들이 절대 review_status='AUTO'가 되지 않는지**를 실제 모델 출력으로
-  검증했습니다 (`test_embedding_does_not_auto_confirm_hard_negative_examples`).
-- 짧은 한글 단어의 한 글자 오타(예: "농협은헹")는 rapidfuzz로는 75점 정도라
-  threshold(90점) 미달이지만, 정확히 같은 별칭 텍스트("농은")를 그대로 입력
-  하면 Embedding 유사도가 0.9 이상 나온다는 것도 실제 점수로 확인했습니다.
+- DB 연결, FAST PATH(Exact/Alias/Fuzzy), Embedding, Context Reranking, Human
+  Review까지 화면 흐름 전체(마스터 시딩 → 샘플 생성 → 컬럼 매핑 → 정규화
+  실행 → Human Review 승인)를 실제 PostgreSQL + 실제 임베딩 모델로 확인.
+- "OO농협"/"농협유통"/"NH투자"가 FAST PATH(rapidfuzz 45~60점), Embedding
+  단독(문맥 없음), Context Rerank(문맥 있어도 혼동 방지 키워드 있음) 세
+  경로 모두에서 절대 자동 확정되지 않는 것을 각각 실제 값으로 검증.
+- **같은 거래처 "농협"이 문맥에 따라 다른 결과가 나오는 것을 실제로 확인**:
+  "대출이자 지급" 문맥 → 자동 확정(AUTO), "농산물 구매대금 지급" 문맥 →
+  검토 필요(NEEDS_REVIEW). (`test_context_rerank_distinguishes_same_vendor_by_context`)
+- FAST PATH의 Fuzzy 자동 확정에 대한 안전장치(혼동 방지 키워드 거부권)가
+  실제로 동작하는지도 별도로 검증
+  (`test_apply_normalization_with_context_column_end_to_end`).
 - 임베딩 모델을 다운로드할 수 없는 환경에서는 이 테스트들이 실패가 아니라
   건너뜀(skip) 처리되도록 만들어뒀습니다 (PostgreSQL과 동일한 패턴).
 
-아직 Context Reranking, Human Review, 완전성 비교 관련 테스트는 해당 기능이
-구현되지 않아 존재하지 않습니다. 30만 행 대용량 테스트도 아직 실행하지
-않았습니다 (Phase 8에서 진행).
+아직 완전성 비교, Feedback 관련 테스트는 해당 기능이 구현되지 않아 존재하지
+않습니다. 30만 행 대용량 테스트도 아직 실행하지 않았습니다 (Phase 8에서 진행).
 
 ## PostgreSQL 연결 방법
 
@@ -250,9 +259,9 @@ WHERE institution_id = :institution_id;
 ```
 
 아래 두 쿼리는 `normalization_results`/`human_reviews`에 실제 데이터가
-쌓이면 쓸 수 있는 예시입니다 (Phase 3의 정규화 결과는 아직 이 테이블에
+쌓이면 쓸 수 있는 예시입니다 (정규화/Human Review 결과는 아직 이 테이블에
 저장하지 않고 화면에서만 보여주므로, 지금은 테이블이 비어 있습니다 —
-저장 기능은 Phase 5~6에서 추가할 계획입니다):
+저장 기능은 Phase 6에서 추가할 계획입니다):
 
 ```sql
 -- 수동 검토가 필요한 건 조회
@@ -273,15 +282,15 @@ SELECT * FROM human_reviews WHERE review_action = 'CHANGE_INSTITUTION';
 - 외부 LLM API(OpenAI, Claude API 등)를 호출하지 않습니다. AI 기능은 모두
   내 컴퓨터에서 실행되는 모델을 사용할 계획입니다.
 
-## 다음 단계 (계획서 기준 Phase 5~9)
+## 다음 단계 (계획서 기준 Phase 6~9)
 
 - ~~Phase 2: PostgreSQL 연결, 금융기관 Master/별칭 테이블~~ (완료)
 - ~~Phase 3: 정확 일치, 별칭 매칭, 유사도(rapidfuzz) 매칭~~ (완료)
-- ~~Phase 4: Embedding 모델, 후보 검색~~ (완료. 자동 확정은 아직 허용하지
-  않음 — 문맥 재평가가 없어서 위험하다고 판단했기 때문. 결과 Cache는
-  "고유 표현당 1회 임베딩"까지만 구현했고, 문맥별로 구분하는 Cache는 Phase 5)
-- Phase 5: 문맥 기반 재평가(Context Reranking), 신뢰도 계산, Human Review 화면
-- Phase 6: Human Review 결과 저장, Feedback 데이터 축적
+- ~~Phase 4: Embedding 모델, 후보 검색~~ (완료)
+- ~~Phase 5: 문맥 기반 재평가(Context Reranking), Human Review 화면~~ (완료.
+  Cross-Encoder가 아닌 키워드 규칙 기반 Fallback이며, 이 점을 코드/README에
+  명시함. Human Review는 화면 반영까지만 되고 DB 저장은 Phase 6)
+- Phase 6: Human Review 결과 PostgreSQL 저장, Feedback 데이터 축적
 - Phase 7: 회사 제출 금융기관 목록 업로드, 완전성 비교(누락 후보 도출)
 - Phase 8: 성능 평가, 대용량(30만 건) 테스트, Excel 결과 다운로드
 - Phase 9: pytest 보강, README 최종화

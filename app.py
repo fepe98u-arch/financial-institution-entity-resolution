@@ -16,7 +16,7 @@ from src.column_mapper import (
     build_context_text,
     validate_mapping,
 )
-from src.config_loader import get_fuzzy_auto_threshold, load_settings
+from src.config_loader import get_context_rerank_embedding_floor, get_fuzzy_auto_threshold, load_settings
 from src.data_loader import load_journal_file
 from src.database.connection import check_connection, get_engine, get_session
 from src.database.repository import (
@@ -31,6 +31,7 @@ from src.database.repository import (
     set_alias_active,
     set_institution_active,
 )
+from src.human_review import REVIEW_ACTIONS, apply_human_decision
 from src.normalization_pipeline import apply_normalization
 from src.synthetic_data_generator import generate_synthetic_journal
 
@@ -52,13 +53,12 @@ PAGES_IMPLEMENTED = [
     "분개장 업로드",
     "컬럼 Mapping",
     "금융기관 정규화",
+    "Human Review",
     "금융기관 Master",
     "Alias Master",
     "Database 상태",
 ]
 PAGES_PLANNED = [
-    "AI 결과 (Phase 4~5)",
-    "Human Review (Phase 5~6)",
     "회사 금융기관 목록 (Phase 7)",
     "완전성 비교 (Phase 7)",
     "모델 성능 (Phase 8)",
@@ -70,7 +70,7 @@ PAGES_PLANNED = [
 st.sidebar.title(settings["app"]["title"])
 page = st.sidebar.radio("메뉴", PAGES_IMPLEMENTED + PAGES_PLANNED)
 st.sidebar.markdown("---")
-st.sidebar.caption("현재는 Phase 1~3만 구현되어 있습니다. 그 외 메뉴는 자리 표시일 뿐 동작하지 않습니다.")
+st.sidebar.caption("현재는 Phase 1~5만 구현되어 있습니다. 그 외 메뉴는 자리 표시일 뿐 동작하지 않습니다.")
 
 
 def page_dashboard():
@@ -98,8 +98,8 @@ def page_dashboard():
     col3.metric("자동 정규화(AUTO, FAST PATH만)", f"{auto_count:,}")
     col4.metric("검토 필요(NEEDS_REVIEW)", f"{needs_review_count:,}")
     st.caption(
-        "EMBEDDING 방법으로 표시된 건도 review_status=NEEDS_REVIEW입니다 — 문맥 재평가(Context "
-        "Reranking)가 없는 상태에서는 Embedding 결과를 자동 확정하지 않습니다 (Phase 5에서 보완 예정)."
+        "CONTEXT_RERANK 방법으로 자동 확정(AUTO)된 건은 문맥의 금융 키워드까지 확인된 경우입니다. "
+        "EMBEDDING 방법(context_text 없이 처리된 건)은 문맥 근거가 없어 항상 검토 필요로 남습니다."
     )
 
 
@@ -186,13 +186,13 @@ def page_column_mapping():
 
 
 def page_normalization():
-    st.title("금융기관 정규화 (FAST PATH + Embedding)")
+    st.title("금융기관 정규화 (FAST PATH + Embedding + Context Rerank)")
     st.caption(
         "1) Exact Match → Alias Match → Fuzzy Match (FAST PATH) 순서로 시도합니다. "
-        "2) 여기서 확정하지 못한 표현만 Embedding(AI PATH)으로 다시 시도합니다. "
-        "Embedding 결과는 점수가 높아도 자동 확정하지 않고 항상 '검토 필요'로 표시합니다 — "
-        "문맥 재평가(Context Reranking)가 아직 없어서, 'OO농협'처럼 이름만 비슷한 경우를 "
-        "잘못 자동 확정할 위험이 있기 때문입니다 (Phase 5에서 보완 예정)."
+        "2) 확정하지 못한 표현은 Embedding(AI PATH)으로 후보를 찾습니다. "
+        "3) context_text가 있으면, 문맥의 금융 키워드/혼동 방지 키워드로 후보를 재평가합니다 "
+        "(Context Reranking). 혼동 방지 키워드가 하나라도 있으면 — Fuzzy로 이미 자동 확정된 "
+        "경우까지 포함해서 — 절대 자동 확정하지 않고 검토 필요로 되돌립니다."
     )
 
     df = st.session_state.journal_df
@@ -205,9 +205,17 @@ def page_normalization():
         return
 
     vendor_column = mapping["vendor"]
+    has_context = "context_text" in df.columns
+    if not has_context:
+        st.info(
+            "context_text 컬럼이 없습니다 — '컬럼 Mapping'에서 먼저 생성하면 문맥 재평가(Context "
+            "Reranking)까지 적용됩니다. 지금은 거래처 이름만으로 FAST PATH/Embedding을 실행합니다."
+        )
+
     threshold = get_fuzzy_auto_threshold()
+    embedding_floor = get_context_rerank_embedding_floor()
     use_embedding = st.checkbox("Embedding(AI PATH) 사용", value=True)
-    st.caption(f"Fuzzy 자동 정규화 threshold: {threshold:.1f}점 (config/model_config.yaml에서 조정 가능)")
+    st.caption(f"Fuzzy 자동 정규화 threshold: {threshold:.1f}점, Context Rerank embedding_floor: {embedding_floor:.2f} (config/model_config.yaml)")
     if use_embedding:
         st.caption(
             "최초 실행 시 임베딩 모델(약 470MB)을 다운로드합니다. 인터넷이 필요하며, "
@@ -228,7 +236,13 @@ def page_normalization():
 
         with st.spinner("정규화 실행 중..."):
             result_df, embedding_error = apply_normalization(
-                df, vendor_column, institutions, threshold, use_embedding=use_embedding
+                df,
+                vendor_column,
+                institutions,
+                threshold,
+                use_embedding=use_embedding,
+                context_column="context_text" if has_context else None,
+                embedding_floor=embedding_floor,
             )
         st.session_state.normalized_df = result_df
         if embedding_error:
@@ -252,6 +266,77 @@ def page_normalization():
             result_df.select(preview_cols).unique().head(settings["app"]["max_preview_rows"]),
             use_container_width=True,
         )
+
+
+def page_human_review():
+    st.title("Human Review")
+    st.caption(
+        "자동으로 확정되지 않은 항목을 사람이 직접 확인합니다. 여기서 내린 판단은 지금은 "
+        "이 화면(세션)에만 반영되고 PostgreSQL에는 저장되지 않습니다 — human_reviews 테이블에 "
+        "저장하는 기능은 Phase 6에서 추가할 계획입니다."
+    )
+
+    result_df = st.session_state.normalized_df
+    if result_df is None:
+        st.info("먼저 '금융기관 정규화'에서 정규화를 실행하세요.")
+        return
+
+    has_context = "context_text" in result_df.columns
+    key_cols = ["detected_expression"] + (["context_text"] if has_context else [])
+    display_cols = key_cols + [
+        "canonical_institution",
+        "institution_id",
+        "normalization_method",
+        "top1_score",
+        "top2_candidate",
+        "top2_score",
+        "reason",
+    ]
+
+    needs_review = result_df.filter(pl.col("review_status") == "NEEDS_REVIEW").select(display_cols).unique(subset=key_cols)
+    st.write(f"검토 필요 항목: {needs_review.height}건 (고유 표현 기준)")
+
+    if needs_review.height == 0:
+        st.success("검토가 필요한 항목이 없습니다.")
+        return
+
+    session = get_session()
+    try:
+        institutions = list_institutions(session, active_only=True)
+    finally:
+        session.close()
+    institution_options = {i.canonical_name: (i.institution_id, i.canonical_name) for i in institutions}
+
+    max_rows_to_show = 30
+    rows = needs_review.head(max_rows_to_show).to_dicts()
+    if needs_review.height > max_rows_to_show:
+        st.caption(f"상위 {max_rows_to_show}건만 표시합니다 (전체 {needs_review.height}건).")
+
+    for i, row in enumerate(rows):
+        label = f"{row['detected_expression']} → {row.get('canonical_institution') or '후보 없음'} (top1={row.get('top1_score')})"
+        with st.expander(label):
+            st.write("원문:", row["detected_expression"])
+            if has_context:
+                st.write("문맥:", row.get("context_text"))
+            st.write("추천 기관:", row.get("canonical_institution"))
+            st.write("Top1 Score:", row.get("top1_score"))
+            st.write("Top2 후보:", row.get("top2_candidate"), " / Score:", row.get("top2_score"))
+            st.write("방법:", row.get("normalization_method"))
+            st.write("근거:", row.get("reason"))
+
+            action_label = st.radio("처리", list(REVIEW_ACTIONS.keys()), key=f"review_action_{i}", horizontal=True)
+            override_institution = None
+            if action_label == "다른 금융기관으로 변경":
+                selected_name = st.selectbox("변경할 기관", list(institution_options.keys()), key=f"review_override_{i}")
+                override_institution = institution_options[selected_name]
+
+            if st.button("적용", key=f"review_apply_{i}"):
+                match_columns = {col: row[col] for col in key_cols}
+                action = REVIEW_ACTIONS[action_label]
+                st.session_state.normalized_df = apply_human_decision(
+                    st.session_state.normalized_df, match_columns, action, override_institution
+                )
+                st.success("반영했습니다. (아직 PostgreSQL에는 저장되지 않음)")
 
 
 def _show_db_connection_banner() -> bool:
@@ -427,6 +512,8 @@ elif page == "컬럼 Mapping":
     page_column_mapping()
 elif page == "금융기관 정규화":
     page_normalization()
+elif page == "Human Review":
+    page_human_review()
 elif page == "금융기관 Master":
     page_institution_master()
 elif page == "Alias Master":

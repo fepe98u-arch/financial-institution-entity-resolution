@@ -25,15 +25,33 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _make_institution(institution_id: int, canonical_name: str, aliases: list[str]) -> InstitutionMaster:
-    institution = InstitutionMaster(institution_id=institution_id, canonical_name=canonical_name, active=True)
+def _make_institution(
+    institution_id: int,
+    canonical_name: str,
+    aliases: list[str],
+    keywords: str | None = None,
+    negative_keywords: str | None = None,
+) -> InstitutionMaster:
+    institution = InstitutionMaster(
+        institution_id=institution_id,
+        canonical_name=canonical_name,
+        active=True,
+        keywords=keywords,
+        negative_keywords=negative_keywords,
+    )
     institution.aliases = [InstitutionAlias(alias_text=text, alias_type="ALIAS", active=True) for text in aliases]
     return institution
 
 
 def _institutions():
     return [
-        _make_institution(1, "NH농협은행", ["농협은행", "농은", "NH농협"]),
+        _make_institution(
+            1,
+            "NH농협은행",
+            ["농협은행", "농은", "NH농협"],
+            keywords="대출,차입,이자,예금,계좌,송금",
+            negative_keywords="농산물,원재료,조합원,유통,증권",
+        ),
         _make_institution(2, "KB국민은행", ["국민은행", "KB국민"]),
         _make_institution(3, "신한은행", ["신한", "신한 BIZ"]),
     ]
@@ -65,23 +83,49 @@ def test_find_embedding_candidates_ranks_exact_alias_highest():
     assert top1.score > 0.9  # 완전히 같은 텍스트("농은")이므로 거의 1.0에 가까움
 
 
-def test_embedding_does_not_auto_confirm_hard_negative_examples():
-    """실측: 'OO농협'은 Embedding 단독으로 NH농협은행과 높은 유사도가 나올 수 있다.
-
-    문맥 재평가가 없는 상태에서는 위험하므로, 파이프라인이 이를 절대
-    review_status='AUTO'로 만들지 않는지 확인한다 (apply_embedding_path 검증).
-    """
-    from src.normalization_pipeline import apply_embedding_path, resolve_vendor_expressions
+def test_embedding_without_context_never_auto_confirms():
+    """context_text가 없으면(Phase 4와 동일한 상황) Embedding 결과는 항상 검토 필요다."""
+    from src.normalization_pipeline import resolve_ai_path
 
     institutions = _institutions()
     texts = ["OO농협", "농협유통", "NH투자"]
-    resolved = resolve_vendor_expressions(texts, institutions, fuzzy_auto_threshold=90.0)
-    for text in texts:
-        assert resolved[text]["normalization_method"] == "UNRESOLVED"
+    pairs = [(text, None) for text in texts]
 
-    updated, error = apply_embedding_path(resolved, institutions)
-    assert error is None
+    results = resolve_ai_path(pairs, institutions)
     for text in texts:
-        # Embedding이 후보를 찾아 method가 EMBEDDING으로 바뀌더라도, review_status는
-        # 절대 AUTO가 아니어야 한다 (자동 확정 금지).
-        assert updated[text]["review_status"] == "NEEDS_REVIEW", text
+        assert results[(text, None)]["review_status"] == "NEEDS_REVIEW", text
+        assert results[(text, None)]["normalization_method"] == "EMBEDDING"
+
+
+def test_context_rerank_distinguishes_same_vendor_by_context():
+    """계획서 1번 섹션의 핵심 예시: 같은 '농협'이라도 문맥에 따라 결과가 달라야 한다."""
+    from src.normalization_pipeline import resolve_ai_path
+
+    institutions = _institutions()
+    pairs = [
+        ("농협", "농협 | 운영자금 대출이자 지급 | 이자비용 | 장기차입금"),  # 은행 거래 문맥
+        ("농협", "농협 | 농산물 구매대금 지급 | 원재료 | 외상매입금"),  # 구매처 문맥
+    ]
+    results = resolve_ai_path(pairs, institutions)
+
+    bank_context_result = results[pairs[0]]
+    purchase_context_result = results[pairs[1]]
+
+    assert bank_context_result["review_status"] == "AUTO", bank_context_result["reason"]
+    assert bank_context_result["canonical_institution"] == "NH농협은행"
+
+    assert purchase_context_result["review_status"] == "NEEDS_REVIEW", purchase_context_result["reason"]
+
+
+def test_context_rerank_negative_keyword_blocks_negative_examples():
+    from src.normalization_pipeline import resolve_ai_path
+
+    institutions = _institutions()
+    pairs = [
+        ("OO농협", "OO농협 | 농산물 구매대금 지급 | 원재료 | 외상매입금"),
+        ("농협유통", "농협유통 | 상품 매입대금 지급 | 상품 | 외상매입금"),
+        ("NH투자", "NH투자 | 증권 매매 정산 | 단기매매증권 | 보통예금"),
+    ]
+    results = resolve_ai_path(pairs, institutions)
+    for pair in pairs:
+        assert results[pair]["review_status"] == "NEEDS_REVIEW", (pair, results[pair]["reason"])
