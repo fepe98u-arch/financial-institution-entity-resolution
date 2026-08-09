@@ -46,6 +46,7 @@ from src.database.results_repository import (
     save_normalization_results,
     start_processing_run,
 )
+from src.auth import require_password
 from src.completeness_checker import (
     compare_completeness,
     get_institution_detail_rows,
@@ -63,6 +64,9 @@ INSTITUTION_TYPES = ["BANK", "SECURITIES", "INSURANCE", "OTHER"]
 settings = load_settings()
 
 st.set_page_config(page_title=settings["app"]["title"], layout="wide")
+
+if not require_password(settings["app"]["title"]):
+    st.stop()
 
 if "journal_df" not in st.session_state:
     st.session_state.journal_df = None

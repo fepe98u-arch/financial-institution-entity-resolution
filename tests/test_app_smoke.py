@@ -4,10 +4,13 @@
 context_text 생성까지 에러 없이 동작하는지 확인한다.
 """
 
+import os
+
 import pytest
 from sqlalchemy import delete, select
 from streamlit.testing.v1 import AppTest
 
+import src.config_loader  # noqa: F401  (import 시 .env를 로딩한다)
 from src.database.connection import check_connection, get_session
 from src.database.models import (
     CompletenessResult,
@@ -20,6 +23,15 @@ from src.database.models import (
 
 APP_TIMEOUT = 20
 _DB_CONNECTED, _ = check_connection()
+_APP_PASSWORD = os.getenv("APP_PASSWORD")
+
+
+def _login(at: AppTest) -> None:
+    """비밀번호 게이트를 통과시킨다 — 이후에야 사이드바(메뉴)가 나타난다."""
+    if not _APP_PASSWORD:
+        pytest.skip("APP_PASSWORD가 .env에 없어 화면 흐름 테스트를 진행할 수 없습니다.")
+    at.text_input[0].set_value(_APP_PASSWORD).run(timeout=APP_TIMEOUT)
+    at.button[0].click().run(timeout=APP_TIMEOUT)
 
 
 def _cleanup_run(run_id: int | None) -> None:
@@ -47,15 +59,26 @@ def _cleanup_run(run_id: int | None) -> None:
         session.close()
 
 
+def test_login_screen_loads_without_error():
+    """로그인 화면 자체가 에러 없이 뜨는지 확인한다 (비밀번호 입력 전 상태)."""
+    at = AppTest.from_file("app.py")
+    at.run(timeout=APP_TIMEOUT)
+    assert not at.exception
+    assert len(at.text_input) > 0
+    assert len(at.sidebar.radio) == 0  # 로그인 전에는 메뉴가 보이면 안 됨
+
+
 def test_dashboard_loads_without_error():
     at = AppTest.from_file("app.py")
     at.run(timeout=APP_TIMEOUT)
+    _login(at)
     assert not at.exception
 
 
 def test_generate_sample_data():
     at = AppTest.from_file("app.py")
     at.run(timeout=APP_TIMEOUT)
+    _login(at)
 
     at.sidebar.radio[0].set_value("분개장 업로드").run(timeout=APP_TIMEOUT)
     at.button[0].click().run(timeout=APP_TIMEOUT)  # "샘플 분개 생성" 버튼
@@ -67,6 +90,7 @@ def test_generate_sample_data():
 def test_column_mapping_builds_context_text():
     at = AppTest.from_file("app.py")
     at.run(timeout=APP_TIMEOUT)
+    _login(at)
 
     at.sidebar.radio[0].set_value("분개장 업로드").run(timeout=APP_TIMEOUT)
     at.button[0].click().run(timeout=APP_TIMEOUT)
@@ -89,6 +113,7 @@ def test_db_pages_load_without_crashing(page_name):
     """PostgreSQL이 연결되어 있지 않아도 이 화면들이 에러 없이 '연결 필요' 안내를 보여줘야 한다."""
     at = AppTest.from_file("app.py")
     at.run(timeout=APP_TIMEOUT)
+    _login(at)
     at.sidebar.radio[0].set_value(page_name).run(timeout=APP_TIMEOUT)
 
     assert not at.exception
@@ -102,6 +127,7 @@ def test_normalization_end_to_end_via_ui():
     """마스터 시딩 -> 샘플 생성 -> 컬럼 매핑 -> 정규화 실행까지 화면 흐름 전체를 확인한다."""
     at = AppTest.from_file("app.py")
     at.run(timeout=APP_TIMEOUT)
+    _login(at)
 
     at.sidebar.radio[0].set_value("금융기관 Master").run(timeout=APP_TIMEOUT)
     at.button[0].click().run(timeout=APP_TIMEOUT)  # 샘플 마스터 데이터 추가 (이미 있으면 건너뜀)
@@ -130,6 +156,7 @@ def test_human_review_approve_via_ui():
     """정규화 실행 후 Human Review 화면에서 승인 버튼까지 눌러서 실제로 반영되는지 확인한다."""
     at = AppTest.from_file("app.py")
     at.run(timeout=APP_TIMEOUT)
+    _login(at)
 
     at.sidebar.radio[0].set_value("금융기관 Master").run(timeout=APP_TIMEOUT)
     at.button[0].click().run(timeout=APP_TIMEOUT)
@@ -169,6 +196,7 @@ def test_completeness_comparison_finds_additional_candidate_via_ui():
     """샘플 회사 목록에서 일부러 뺀 KB국민은행이 '추가 검토 후보(B-A)'로 잡히는지 화면으로 확인한다."""
     at = AppTest.from_file("app.py")
     at.run(timeout=APP_TIMEOUT)
+    _login(at)
 
     at.sidebar.radio[0].set_value("금융기관 Master").run(timeout=APP_TIMEOUT)
     at.button[0].click().run(timeout=APP_TIMEOUT)
@@ -204,6 +232,7 @@ def test_completeness_comparison_finds_additional_candidate_via_ui():
 def test_model_performance_runs_all_variants_via_ui():
     at = AppTest.from_file("app.py")
     at.run(timeout=APP_TIMEOUT)
+    _login(at)
 
     at.sidebar.radio[0].set_value("금융기관 Master").run(timeout=APP_TIMEOUT)
     at.button[0].click().run(timeout=APP_TIMEOUT)
@@ -219,6 +248,7 @@ def test_model_performance_runs_all_variants_via_ui():
 def test_processing_performance_measures_real_timing_via_ui():
     at = AppTest.from_file("app.py")
     at.run(timeout=APP_TIMEOUT)
+    _login(at)
 
     at.sidebar.radio[0].set_value("금융기관 Master").run(timeout=APP_TIMEOUT)
     at.button[0].click().run(timeout=APP_TIMEOUT)
