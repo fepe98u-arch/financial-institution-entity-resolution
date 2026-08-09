@@ -13,17 +13,25 @@
 구분할 수 없다. 그래서 규칙은 다음과 같다:
 
 1. 혼동 방지 키워드가 문맥에 하나라도 있으면 → 절대 자동 확정하지 않는다.
-2. 혼동 방지 키워드가 없고, 금융 키워드가 1개 이상 있고, Embedding 유사도가
-   embedding_floor 이상이면 → 자동 확정한다.
-3. 그 외(문맥 근거가 없는 경우)에는 → 검토 필요로 남긴다.
+2. Top1과 Top2 후보의 점수 차이(margin)가 너무 작으면 → 자동 확정하지 않는다
+   (계획서 23번 섹션: "margin이 threshold 이하면 Human Review로 보낼 수
+   있어야 한다"). 실제로 이 규칙이 없으면 어떤 문제가 생기는지 Phase 8
+   평가에서 실측했다: "테스트전자"(일반 거래처, 금융기관 아님)가 신한은행과
+   Embedding 0.861(margin 0.043, NH농협은행과 거의 붙어있음)로 나왔는데,
+   문맥에 흔한 키워드 "예금"("보통예금" 상대계정)이 있다는 이유만으로
+   자동 확정될 뻔했다. margin 규칙을 추가해서 막았다.
+3. 혼동 방지 키워드가 없고, margin이 충분하고, 금융 키워드가 1개 이상 있고,
+   Embedding 유사도가 embedding_floor 이상이면 → 자동 확정한다.
+4. 그 외(문맥 근거가 없는 경우)에는 → 검토 필요로 남긴다.
 
-embedding_floor는 공식 감사기준이 아니라 config/model_config.yaml에서
-조정 가능한 기본값이다.
+embedding_floor/margin threshold는 공식 감사기준이 아니라
+config/model_config.yaml에서 조정 가능한 기본값이다.
 """
 
 from dataclasses import dataclass
 
 DEFAULT_EMBEDDING_FLOOR = 0.85
+DEFAULT_MIN_SCORE_MARGIN = 0.05
 
 
 def _matched_keywords(context_text: str, keywords_csv: str | None) -> list[str]:
@@ -53,9 +61,18 @@ class RerankDecision:
 
 
 def evaluate_candidate(
-    context_text: str | None, institution, embedding_score: float, embedding_floor: float = DEFAULT_EMBEDDING_FLOOR
+    context_text: str | None,
+    institution,
+    embedding_score: float,
+    embedding_floor: float = DEFAULT_EMBEDDING_FLOOR,
+    score_margin: float | None = None,
+    min_score_margin: float = DEFAULT_MIN_SCORE_MARGIN,
 ) -> RerankDecision:
-    """Embedding Top-1 후보 하나를 문맥과 함께 재평가한다."""
+    """Embedding Top-1 후보 하나를 문맥과 함께 재평가한다.
+
+    score_margin: Top1과 Top2 후보의 점수 차이. Top2가 없어서 모르면 None을
+    넘긴다 (이 경우 margin 검사는 건너뛴다 — 비교 대상이 없으므로).
+    """
     context_text = context_text or ""
 
     negative_hits = _matched_keywords(context_text, institution.negative_keywords)
@@ -65,6 +82,17 @@ def evaluate_candidate(
             positive_keywords=[],
             negative_keywords=negative_hits,
             reason=f"혼동 방지 키워드 {negative_hits} 포함 → 자동 확정 거부",
+        )
+
+    if score_margin is not None and score_margin < min_score_margin:
+        return RerankDecision(
+            confirmed=False,
+            positive_keywords=[],
+            negative_keywords=[],
+            reason=(
+                f"Top1/Top2 점수 차이 {score_margin:.3f} < threshold {min_score_margin:.2f} "
+                "— 후보 간 구분이 뚜렷하지 않아 검토 필요"
+            ),
         )
 
     positive_hits = _matched_keywords(context_text, institution.keywords)

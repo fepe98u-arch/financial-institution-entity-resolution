@@ -140,7 +140,7 @@ def _resolve_ai_path_one(
             method, confirmed = "CONTEXT_RERANK", False
             reason = "[Context Rerank] Master 정보를 찾을 수 없어 검토 필요"
         else:
-            decision = evaluate_candidate(context_text, institution, top1.score, embedding_floor)
+            decision = evaluate_candidate(context_text, institution, top1.score, embedding_floor, score_margin)
             method, confirmed = "CONTEXT_RERANK", decision.confirmed
             reason = f"[Context Rerank] {decision.reason}"
     else:

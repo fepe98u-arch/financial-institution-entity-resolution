@@ -166,3 +166,33 @@ def test_save_and_query_completeness_results(db_session):
     db_session.execute(delete(CompletenessResult).where(CompletenessResult.run_id == run.run_id))
     db_session.commit()
     _cleanup(db_session, run.run_id)
+
+
+def test_add_and_list_performance_log(db_session):
+    from src.database.models import PerformanceLog
+    from src.database.results_repository import add_performance_log, start_processing_run
+
+    run = start_processing_run(db_session, "pytest_perf.csv", "csv", total_rows=300000)
+    log = add_performance_log(
+        db_session,
+        run.run_id,
+        total_rows=300000,
+        fast_path_count=290000,
+        alias_count=0,
+        fuzzy_count=0,
+        embedding_count=0,
+        context_rerank_count=10000,
+        manual_review_count=10000,
+        unresolved_count=0,
+        cache_hit_count=299977,
+        processing_seconds=11.73,
+    )
+    assert log.performance_id is not None
+
+    logs = [r for r in db_session.query(PerformanceLog).all() if r.run_id == run.run_id]
+    assert len(logs) == 1
+    assert logs[0].total_rows == 300000
+
+    db_session.execute(delete(PerformanceLog).where(PerformanceLog.run_id == run.run_id))
+    db_session.commit()
+    _cleanup(db_session, run.run_id)

@@ -1,4 +1,4 @@
-# Phase 1 + Phase 2 + Phase 3 + Phase 4 dependencies.
+# Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 8 dependencies.
 # Later phases will add: scikit-learn — added when each phase actually needs it.
 
 streamlit==1.38.0
@@ -20,3 +20,6 @@ rapidfuzz==3.9.7
 #   pip install --index-url https://download.pytorch.org/whl/cpu torch==2.13.0
 # (index를 지정하지 않으면 훨씬 큰 CUDA 포함 버전이 설치될 수 있다)
 sentence-transformers==3.0.1
+
+# Phase 8: Excel 결과 다운로드 (Polars write_excel이 내부적으로 사용)
+xlsxwriter==3.2.9

@@ -26,7 +26,7 @@ Context-Aware Financial Institution Entity Resolution
 확정"하지 않습니다. 최종 판단은 항상 감사인이 합니다. 이 프로그램은 "빠뜨리기
 쉬운 후보를 찾아 보여주는" 보조 도구입니다.
 
-## 지금 실제로 되는 것 / 안 되는 것 (Phase 7 기준)
+## 지금 실제로 되는 것 / 안 되는 것 (Phase 8 기준)
 
 **실제로 구현되어 동작하는 기능**
 - 분개장 CSV/Excel 파일 업로드, 컬럼 매핑, context_text 생성 (Phase 1)
@@ -87,7 +87,41 @@ Context-Aware Financial Institution Entity Resolution
     화면 테스트로 확인했습니다.
   - 비교 결과는 `completeness_results` 테이블에 저장됩니다 (정규화를 먼저
     실행해서 run_id가 있어야 저장됨).
-- pytest 자동 테스트 65개 (아래 "테스트 실행 결과" 참고)
+- **모델 성능 평가** (Phase 8, 신규): 완전히 가상인 라벨링된 평가 데이터셋
+  26건으로 Baseline1(Exact+Alias) → Baseline2(+Fuzzy) → Model3(+Embedding)
+  → Model4(+Context Rerank) 4가지 구성을 실제로 비교합니다. **실제로 측정한
+  결과**(2026-08-09, DB에 시딩된 샘플 마스터 기준):
+
+  | 구성 | Accuracy | Precision | Recall | Coverage | False Normalization Rate |
+  |---|---|---|---|---|---|
+  | Baseline1 (Exact+Alias) | 0.808 | 1.000 | 0.722 | 0.500 | 0.000 |
+  | Baseline2 (+Fuzzy) | 0.923 | 0.944 | 0.944 | 0.692 | 0.056 |
+  | Model3 (+Embedding) | 0.923 | 0.944 | 0.944 | 0.692 | 0.056 |
+  | Model4 (+Context Rerank) | **0.962** | **1.000** | 0.944 | 0.654 | **0.000** |
+
+  **실제로 발견한 두 번째 버그**: 위 표를 만들다가, Model4에서도
+  "테스트전자"(일반 거래처, 은행 아님)가 "신한은행"으로 잘못 자동 확정되는
+  걸 발견했습니다. 원인: Embedding 유사도 0.861(threshold 0.85 통과)에
+  "예금" 키워드가 문맥의 "보통예금"(거의 모든 거래에 등장하는 흔한
+  상대계정)과 우연히 일치했기 때문입니다. Top1(신한은행 0.861)과
+  Top2(NH농협은행 0.817)의 차이가 0.043으로 매우 좁았는데, 이 점을 규칙에서
+  보지 않고 있었습니다. **수정**: Top1/Top2 점수 차이가 0.05(기본값) 미만이면
+  키워드가 있어도 자동 확정하지 않는 규칙을 추가했습니다
+  (`context_reranker.py`의 `min_score_margin`). 수정 후 재측정하니 Model4의
+  false_normalization_rate가 0.056 → **0.000**으로, accuracy가 0.923 →
+  **0.962**로 개선된 것을 위 표에 반영했습니다.
+- **대용량(30만 건) 실측**: 30만 행 가상 분개를 실제로 만들어 끝까지
+  돌려봤습니다. 결과: 30만 행 중 **고유 (거래처, 문맥) 조합은 23개뿐**이었고,
+  FAST PATH만 쓰면 0.014초, Embedding+Context Rerank까지 포함해도
+  **11.73초**에 30만 행 전체가 끝났습니다. 이게 "고유 표현만 매칭하고
+  나머지는 재사용(broadcast)한다"는 설계가 실제로 작동한다는 증거입니다.
+  "처리 성능" 화면에서 원하는 행 수로 직접 재현할 수 있습니다.
+- **Excel 결과 다운로드**: "금융기관 정규화"(Normalized_Journal/
+  Institution_Summary/Manual_Review), "완전성 비교"(Additional_Candidates/
+  Matched_Both/Company_Only), "모델 성능"(Model_Performance) 화면에 각각
+  다운로드 버튼이 있습니다. `xlsxwriter`를 통한 Polars `write_excel()`을
+  사용하며, 원본 파일은 건드리지 않고 새 파일만 만듭니다.
+- pytest 자동 테스트 79개 (아래 "테스트 실행 결과" 참고)
 
 **아직 구현되지 않은 기능**
 - Cross-Encoder 재순위화 — Context Reranking은 실제 Cross-Encoder가 아니라
@@ -97,15 +131,12 @@ Context-Aware Financial Institution Entity Resolution
   `normalization_results`에 저장하고, 후보 전체 목록은 화면에서만 보여줍니다
 - Feedback Label로 모델을 실제로 재학습/개선하는 기능 (지금은 데이터를
   쌓기만 함 — 계획서도 이 범위까지만 요구함)
-- Excel 결과 다운로드 (Additional_Candidates 시트 등) — 지금은 화면에서만
-  결과를 보여주고 파일로 내려받는 기능은 없습니다
-- 대용량(10만/30만 건) 성능 테스트. **`normalization_results`/
-  `completeness_results` 저장은 지금 행/후보마다 Python 객체를 만들어
-  `session.add_all()`로 저장하는 방식인데, 수백 행에서는 문제없지만 30만
-  행에서 얼마나 걸리는지는 아직 측정하지 않았습니다** (Phase 8에서 확인 예정)
-- 모델 성능(Accuracy/Precision/Recall, False Normalization Rate 등) 평가
+- `normalization_results`/`completeness_results` 저장은 지금 행/후보마다
+  Python 객체를 만들어 `session.add_all()`로 저장하는 방식입니다. 30만 행의
+  **정규화 계산 자체**는 11.73초로 실측했지만, 30만 행을 **PostgreSQL에 모두
+  저장**하는 시간까지는 아직 실측하지 않았습니다 (다음 실측 항목으로 남김).
 
-이 문서 뒤쪽의 "다음 단계"에 Phase 8부터의 계획이 있습니다.
+이 문서 뒤쪽의 "다음 단계"에 Phase 9부터의 계획이 있습니다.
 
 ## 왜 이런 기술을 쓰는가 (비개발자용 설명)
 
@@ -166,8 +197,10 @@ src/candidate_retriever.py      Embedding 기반 후보 검색 (Phase 4)
 src/context_reranker.py         문맥 기반 재평가 규칙 (Phase 5)
 src/human_review.py             Human Review 판단을 화면 세션에 반영 (Phase 5)
 src/normalization_pipeline.py   FAST PATH + AI PATH + Context Rerank 파이프라인
-src/database/results_repository.py  실행 이력/정규화 결과/Human Review/Feedback/완전성 비교 저장·조회
+src/database/results_repository.py  실행 이력/정규화 결과/Human Review/Feedback/완전성 비교/성능 로그 저장·조회
 src/completeness_checker.py     회사 제출 목록 vs 분개장 발견 결과 비교 (Phase 7)
+src/evaluation.py               가상 평가 데이터셋 + Baseline1~Model4 성능 측정 (Phase 8)
+src/export_service.py           여러 시트가 있는 Excel 파일 생성 (Phase 8)
 tests/                          pytest 자동 테스트
 ```
 
@@ -203,7 +236,9 @@ tests/                          pytest 자동 테스트
    6. "Dashboard" → 방법별 처리 건수 확인
    7. "회사 금융기관 목록" → 회사가 제출한 목록을 올리거나 샘플 목록 생성
    8. "완전성 비교" → "완전성 비교 실행" → 추가 검토 후보(B-A) 확인
-   9. "Database 상태" / "Feedback" → 실행 이력, 저장된 리뷰/피드백 건수 확인
+   9. "모델 성능" → "성능 평가 실행" → Baseline1~Model4 비교표 (Excel 다운로드 가능)
+   10. "처리 성능" → 원하는 행 수 입력 후 "대용량 처리 성능 테스트 실행"
+   11. "Database 상태" / "Feedback" → 실행 이력, 저장된 리뷰/피드백 건수 확인
 
 ## 테스트 실행 방법 / 결과
 
@@ -211,31 +246,38 @@ tests/                          pytest 자동 테스트
 .venv\Scripts\pytest -v
 ```
 
-**실제로 실행한 결과 (2026-08-09 기준)**: 65개 전부 통과 (`65 passed`).
+**실제로 실행한 결과 (2026-08-09 기준)**: 79개 전부 통과 (`79 passed`).
 
-- DB 연결, FAST PATH(Exact/Alias/Fuzzy), Embedding, Context Reranking, Human
-  Review, PostgreSQL 저장, **완전성 비교까지** 화면 흐름 전체(마스터 시딩 →
-  샘플 생성 → 컬럼 매핑 → 정규화 실행 → Human Review 승인 → 회사 목록 업로드
-  → 완전성 비교 실행)를 실제 PostgreSQL + 실제 임베딩 모델로 확인.
-- "OO농협"/"농협유통"/"NH투자"가 FAST PATH(rapidfuzz 45~60점), Embedding
-  단독(문맥 없음), Context Rerank(문맥 있어도 혼동 방지 키워드 있음) 세
+- DB 연결, FAST PATH, Embedding, Context Reranking, Human Review,
+  PostgreSQL 저장, 완전성 비교, **모델 성능 평가, 처리 성능(대용량) 측정,
+  Excel 다운로드까지** 화면 흐름 전체를 실제 PostgreSQL + 실제 임베딩
+  모델로 확인.
+- "OO농협"/"농협유통"/"NH투자"가 FAST PATH/Embedding/Context Rerank 세
   경로 모두에서 절대 자동 확정되지 않는 것을 각각 실제 값으로 검증.
-- **같은 거래처 "농협"이 문맥에 따라 다른 결과가 나오는 것을 실제로 확인**:
-  "대출이자 지급" 문맥 → 자동 확정(AUTO), "농산물 구매대금 지급" 문맥 →
-  검토 필요(NEEDS_REVIEW). (`test_context_rerank_distinguishes_same_vendor_by_context`)
-- **완전성 비교가 실제로 후보를 찾는지 화면으로 검증**: 샘플 회사 목록에서
-  KB국민은행을 일부러 뺀 뒤 완전성 비교를 실행하면, "B - A(추가 검토 후보)"
-  건수가 정확히 1이 되는 것을 확인했습니다
+- **같은 거래처 "농협"이 문맥에 따라 다른 결과가 나오는 것을 실제로 확인**
+  (`test_context_rerank_distinguishes_same_vendor_by_context`).
+- **완전성 비교 실측 검증**: 샘플 회사 목록에서 KB국민은행을 일부러 뺀 뒤
+  돌려보면 "추가 검토 후보"가 정확히 1건 잡히는 것을 확인
   (`test_completeness_comparison_finds_additional_candidate_via_ui`).
-  NEEDS_REVIEW 상태인 항목(예: "OO농협"의 NH농협은행 후보)은 이 비교에
-  포함되지 않는 것도 별도로 검증했습니다.
+- **Baseline2(Fuzzy)가 실제로 오탐하는 것을 테스트로 고정**: 문맥 없이
+  Fuzzy만 쓰면 "농협"+농산물 구매 문맥도 그냥 NH농협은행으로 확정해버리고,
+  Model4(Context Rerank)는 이걸 검토 필요로 되돌리는 것을 검증
+  (`test_baseline2_fuzzy_without_context_wrongly_confirms_ambiguous_purchase_case`,
+  `test_model4_context_rerank_avoids_the_false_positive_baseline2_makes`).
+- **대용량(30만 행) 실측**: 30만 행 처리에 FAST PATH만 0.014초, 전체
+  파이프라인(Embedding+Context Rerank 포함) 11.73초가 걸리는 것을 실제로
+  측정했고, "처리 성능" 화면에서 재현 가능함을 AppTest로 확인
+  (`test_processing_performance_measures_real_timing_via_ui`).
+- Excel 다운로드가 실제로 유효한 xlsx 파일(zip 시그니처 `PK`로 시작)을
+  만드는지 확인.
 - Streamlit AppTest로 화면을 실제로 구동해서 저장까지 확인했고, 테스트가
   만든 데이터는 테스트 종료 시 직접 지웁니다 (`_cleanup_run`) — 실행 후
   실제로 `SELECT count(*)`로 DB가 깨끗해지는 것도 확인했습니다.
 - 임베딩 모델/PostgreSQL을 사용할 수 없는 환경에서는 관련 테스트가 실패가
   아니라 건너뜀(skip) 처리되도록 만들어뒀습니다.
 
-30만 행 대용량 테스트/저장 성능은 아직 측정하지 않았습니다 (Phase 8에서 진행).
+30만 행을 PostgreSQL에 실제로 저장하는 시간은 아직 측정하지 않았습니다
+(정규화 계산 자체의 30만 행 성능은 위에서 실측 완료).
 
 ## PostgreSQL 연결 방법
 
@@ -322,6 +364,11 @@ SELECT original_expression, context_text, confirmed_label FROM feedback_labels;
 SELECT canonical_name, journal_count, total_amount
 FROM completeness_results
 WHERE run_id = :run_id AND review_status = 'ADDITIONAL_CANDIDATE';
+
+-- 대용량 처리 성능 이력 조회 ("처리 성능" 화면에서 실행한 결과)
+SELECT total_rows, cache_hit_count, context_rerank_count, processing_seconds
+FROM performance_logs
+ORDER BY created_at DESC;
 ```
 
 ## 보안 관련 주의사항
@@ -335,16 +382,17 @@ WHERE run_id = :run_id AND review_status = 'ADDITIONAL_CANDIDATE';
 - 외부 LLM API(OpenAI, Claude API 등)를 호출하지 않습니다. AI 기능은 모두
   내 컴퓨터에서 실행되는 모델을 사용할 계획입니다.
 
-## 다음 단계 (계획서 기준 Phase 8~9)
+## 다음 단계 (계획서 기준 Phase 9)
 
 - ~~Phase 2: PostgreSQL 연결, 금융기관 Master/별칭 테이블~~ (완료)
 - ~~Phase 3: 정확 일치, 별칭 매칭, 유사도(rapidfuzz) 매칭~~ (완료)
 - ~~Phase 4: Embedding 모델, 후보 검색~~ (완료)
 - ~~Phase 5: 문맥 기반 재평가(Context Reranking), Human Review 화면~~ (완료)
 - ~~Phase 6: Human Review 결과 PostgreSQL 저장, Feedback 데이터 축적~~ (완료)
-- ~~Phase 7: 회사 제출 금융기관 목록 업로드, 완전성 비교~~ (완료. Excel
-  다운로드는 아직 없음 — Phase 8에서 추가)
-- Phase 8: 성능 평가, 대용량(30만 건) 테스트, Excel 결과 다운로드
+- ~~Phase 7: 회사 제출 금융기관 목록 업로드, 완전성 비교~~ (완료)
+- ~~Phase 8: 성능 평가, 대용량(30만 건) 테스트, Excel 결과 다운로드~~ (완료.
+  이 과정에서 실제로 두 번째 false-positive 버그를 발견/수정함 — 위
+  "지금 실제로 되는 것" 참고)
 - Phase 9: pytest 보강, README 최종화
 
 각 Phase가 끝나면 실제로 무엇이 되고 무엇이 안 되는지 이 README와 함께

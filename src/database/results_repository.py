@@ -15,7 +15,14 @@ from datetime import datetime, timezone
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from src.database.models import CompletenessResult, FeedbackLabel, HumanReview, NormalizationResult, ProcessingRun
+from src.database.models import (
+    CompletenessResult,
+    FeedbackLabel,
+    HumanReview,
+    NormalizationResult,
+    PerformanceLog,
+    ProcessingRun,
+)
 
 # ---------------------------------------------------------------------------
 # processing_runs
@@ -192,4 +199,28 @@ def save_completeness_results(session: Session, run_id: int, rows: list[dict]) -
 
 def get_completeness_results(session: Session, run_id: int) -> list[CompletenessResult]:
     stmt = select(CompletenessResult).where(CompletenessResult.run_id == run_id)
+    return list(session.scalars(stmt))
+
+
+# ---------------------------------------------------------------------------
+# performance_logs (Phase 8)
+# ---------------------------------------------------------------------------
+
+
+def add_performance_log(session: Session, run_id: int, **counts_and_seconds) -> PerformanceLog:
+    """대용량 처리 성능 측정값을 저장한다. 실제로 측정한 값만 넘겨야 한다.
+
+    counts_and_seconds: total_rows, fast_path_count, alias_count, fuzzy_count,
+    embedding_count, context_rerank_count, manual_review_count, unresolved_count,
+    cache_hit_count, processing_seconds.
+    """
+    log = PerformanceLog(run_id=run_id, **counts_and_seconds)
+    session.add(log)
+    session.commit()
+    session.refresh(log)
+    return log
+
+
+def list_performance_logs(session: Session, limit: int = 20) -> list[PerformanceLog]:
+    stmt = select(PerformanceLog).order_by(PerformanceLog.created_at.desc()).limit(limit)
     return list(session.scalars(stmt))

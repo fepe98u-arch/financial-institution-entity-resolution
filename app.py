@@ -35,6 +35,7 @@ from src.database.repository import (
 from src.database.results_repository import (
     add_feedback_label,
     add_human_review,
+    add_performance_log,
     apply_review_to_results,
     complete_processing_run,
     count_feedback_labels,
@@ -51,6 +52,8 @@ from src.completeness_checker import (
     normalize_company_list,
     summarize_journal_by_institution,
 )
+from src.evaluation import compute_metrics, run_all_variants
+from src.export_service import build_excel_report
 from src.human_review import REVIEW_ACTIONS, apply_human_decision
 from src.normalization_pipeline import apply_normalization, build_persistable_rows
 from src.synthetic_data_generator import generate_synthetic_journal
@@ -81,6 +84,10 @@ if "company_result_df" not in st.session_state:
     st.session_state.company_result_df = None
 if "completeness_result" not in st.session_state:
     st.session_state.completeness_result = None
+if "model_performance_results" not in st.session_state:
+    st.session_state.model_performance_results = None
+if "processing_performance_result" not in st.session_state:
+    st.session_state.processing_performance_result = None
 
 PAGES_IMPLEMENTED = [
     "Dashboard",
@@ -91,20 +98,20 @@ PAGES_IMPLEMENTED = [
     "Feedback",
     "회사 금융기관 목록",
     "완전성 비교",
+    "모델 성능",
+    "처리 성능",
     "금융기관 Master",
     "Alias Master",
     "Database 상태",
 ]
 PAGES_PLANNED = [
-    "모델 성능 (Phase 8)",
-    "처리 성능 (Phase 8)",
     "설정 (Phase 2+)",
 ]
 
 st.sidebar.title(settings["app"]["title"])
 page = st.sidebar.radio("메뉴", PAGES_IMPLEMENTED + PAGES_PLANNED)
 st.sidebar.markdown("---")
-st.sidebar.caption("현재는 Phase 1~7만 구현되어 있습니다. 그 외 메뉴는 자리 표시일 뿐 동작하지 않습니다.")
+st.sidebar.caption("현재는 Phase 1~8만 구현되어 있습니다. 그 외 메뉴는 자리 표시일 뿐 동작하지 않습니다.")
 
 
 def page_dashboard():
@@ -331,6 +338,28 @@ def page_normalization():
         st.dataframe(
             result_df.select(preview_cols).unique().head(settings["app"]["max_preview_rows"]),
             use_container_width=True,
+        )
+
+        st.subheader("Excel 다운로드")
+        institution_summary = (
+            result_df.group_by("canonical_institution")
+            .agg(pl.len().alias("건수"))
+            .filter(pl.col("canonical_institution").is_not_null())
+            .sort("건수", descending=True)
+        )
+        manual_review = result_df.filter(pl.col("review_status") == "NEEDS_REVIEW")
+        excel_bytes = build_excel_report(
+            {
+                "Normalized_Journal": result_df,
+                "Institution_Summary": institution_summary,
+                "Manual_Review": manual_review,
+            }
+        )
+        st.download_button(
+            "정규화 결과 Excel 다운로드",
+            data=excel_bytes,
+            file_name="normalization_result.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
 
@@ -848,6 +877,199 @@ def page_completeness():
     st.subheader("A - B (회사 목록에는 있으나 분개장에서 발견되지 않음)")
     st.write(result["company_only"] or "없음")
 
+    st.subheader("Excel 다운로드")
+    additional_df = summarize_journal_by_institution(journal_df, result["additional_candidates"], amount_column)
+    excel_bytes = build_excel_report(
+        {
+            "Additional_Candidates": additional_df,
+            "Matched_Both": pl.DataFrame({"canonical_institution": result["both"]}),
+            "Company_Only": pl.DataFrame({"canonical_institution": result["company_only"]}),
+        }
+    )
+    st.download_button(
+        "완전성 비교 결과 Excel 다운로드",
+        data=excel_bytes,
+        file_name="completeness_result.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+def page_model_performance():
+    st.title("모델 성능")
+    st.caption(
+        "완전히 가상의 라벨링된 평가 데이터셋(26건, src/evaluation.py)으로 4가지 구성을 비교합니다. "
+        "여기 나오는 수치는 이 가상 데이터셋에 대한 실제 계산값이며, 공식 성능 지표나 감사기준이 "
+        "아닙니다. 실제 데이터에서는 다른 값이 나올 수 있습니다."
+    )
+
+    if not _show_db_connection_banner():
+        return
+
+    if st.button("성능 평가 실행"):
+        session = get_session()
+        try:
+            init_db(get_engine())
+            institutions = list_institutions_with_aliases(session, active_only=True)
+        finally:
+            session.close()
+
+        if not institutions:
+            st.warning("등록된 금융기관이 없습니다. '금융기관 Master' 메뉴에서 먼저 등록하세요.")
+            return
+
+        threshold = get_fuzzy_auto_threshold()
+        embedding_floor = get_context_rerank_embedding_floor()
+        with st.spinner("4가지 구성으로 평가 실행 중..."):
+            results = run_all_variants(institutions, threshold, embedding_floor)
+        st.session_state.model_performance_results = results
+
+    results = st.session_state.get("model_performance_results")
+    if not results:
+        return
+
+    rows = []
+    for variant_name, metrics in results.items():
+        row = {"variant": variant_name}
+        row.update({k: v for k, v in metrics.items() if k != "embedding_error"})
+        rows.append(row)
+    st.dataframe(pl.DataFrame(rows), use_container_width=True)
+
+    st.caption(
+        "false_normalization_rate = 자동 확정(AUTO/HUMAN)한 것 중 실제로 잘못된 비율입니다. "
+        "coverage가 높아도 false_normalization_rate가 높다면 위험한 구성입니다 — 이 프로젝트는 "
+        "자동처리율보다 이 값을 낮추는 것을 더 중요하게 봅니다."
+    )
+
+    excel_bytes = build_excel_report({"Model_Performance": pl.DataFrame(rows)})
+    st.download_button(
+        "모델 성능 결과 Excel 다운로드",
+        data=excel_bytes,
+        file_name="model_performance.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+def page_processing_performance():
+    st.title("처리 성능")
+    st.caption(
+        "가상 샘플 데이터로 대용량 처리 시간을 실제로 측정합니다. 측정하지 못한 값은 표시하지 "
+        "않습니다 — 임의의 수치를 만들어내지 않습니다."
+    )
+
+    if not _show_db_connection_banner():
+        return
+
+    n_rows = st.number_input("생성할 행 수", min_value=1000, max_value=300000, value=10000, step=1000)
+    use_embedding = st.checkbox("Embedding(AI PATH) 포함", value=True, key="perf_use_embedding")
+
+    if st.button("대용량 처리 성능 테스트 실행"):
+        session = get_session()
+        try:
+            init_db(get_engine())
+            institutions = list_institutions_with_aliases(session, active_only=True)
+        finally:
+            session.close()
+
+        if not institutions:
+            st.warning("등록된 금융기관이 없습니다. '금융기관 Master' 메뉴에서 먼저 등록하세요.")
+            return
+
+        threshold = get_fuzzy_auto_threshold()
+        embedding_floor = get_context_rerank_embedding_floor()
+
+        t0 = time.perf_counter()
+        with st.spinner(f"{n_rows:,}행 가상 데이터 생성 중..."):
+            perf_df = generate_synthetic_journal(n_rows=int(n_rows))
+        t1 = time.perf_counter()
+
+        mapping = {"vendor": "거래처", "description": "적요", "account": "계정과목", "counter_account": "상대계정"}
+        perf_df = build_context_text(perf_df, mapping)
+        t2 = time.perf_counter()
+
+        unique_pairs = perf_df.select(["거래처", "context_text"]).unique().height
+
+        with st.spinner("정규화 실행 중... (Embedding 최초 실행 시 모델 다운로드로 시간이 걸릴 수 있음)"):
+            result_df, embedding_error = apply_normalization(
+                perf_df,
+                "거래처",
+                institutions,
+                threshold,
+                use_embedding=use_embedding,
+                context_column="context_text",
+                embedding_floor=embedding_floor,
+            )
+        t3 = time.perf_counter()
+
+        method_counts = {r["normalization_method"]: r["len"] for r in result_df.group_by("normalization_method").len().to_dicts()}
+        manual_review_count = result_df.filter(pl.col("review_status") == "NEEDS_REVIEW").height
+
+        perf_result = {
+            "n_rows": int(n_rows),
+            "generation_seconds": t1 - t0,
+            "context_text_seconds": t2 - t1,
+            "normalization_seconds": t3 - t2,
+            "total_seconds": t3 - t0,
+            "unique_pairs": unique_pairs,
+            "cache_hit_count": int(n_rows) - unique_pairs,
+            "method_counts": method_counts,
+            "manual_review_count": manual_review_count,
+            "embedding_error": embedding_error,
+        }
+        st.session_state.processing_performance_result = perf_result
+
+        session = get_session()
+        try:
+            run = start_processing_run(session, f"perf_test_{n_rows}rows.csv", "synthetic", int(n_rows))
+            add_performance_log(
+                session,
+                run.run_id,
+                total_rows=int(n_rows),
+                fast_path_count=method_counts.get("EXACT", 0),
+                alias_count=method_counts.get("ALIAS", 0),
+                fuzzy_count=method_counts.get("FUZZY", 0),
+                embedding_count=method_counts.get("EMBEDDING", 0),
+                context_rerank_count=method_counts.get("CONTEXT_RERANK", 0),
+                manual_review_count=manual_review_count,
+                unresolved_count=method_counts.get("UNRESOLVED", 0),
+                cache_hit_count=int(n_rows) - unique_pairs,
+                processing_seconds=t3 - t2,
+            )
+            complete_processing_run(session, run.run_id, processing_seconds=t3 - t0)
+            st.caption(f"처리 성능 로그를 PostgreSQL(run_id={run.run_id})에 저장했습니다.")
+        except Exception as e:
+            st.warning(f"처리 성능 로그를 PostgreSQL에 저장하지 못했습니다: {e}")
+        finally:
+            session.close()
+
+    perf_result = st.session_state.get("processing_performance_result")
+    if not perf_result:
+        return
+
+    if perf_result["embedding_error"]:
+        st.warning(perf_result["embedding_error"])
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("행 수", f"{perf_result['n_rows']:,}")
+    col2.metric("고유 (거래처,문맥) 조합", f"{perf_result['unique_pairs']:,}")
+    col3.metric("Cache로 재사용된 행", f"{perf_result['cache_hit_count']:,}")
+    col4.metric("검토 필요 건수", f"{perf_result['manual_review_count']:,}")
+
+    col5, col6, col7, col8 = st.columns(4)
+    col5.metric("샘플 생성 시간", f"{perf_result['generation_seconds']:.3f}초")
+    col6.metric("context_text 생성 시간", f"{perf_result['context_text_seconds']:.3f}초")
+    col7.metric("정규화 처리 시간", f"{perf_result['normalization_seconds']:.3f}초")
+    col8.metric("전체 시간", f"{perf_result['total_seconds']:.3f}초")
+
+    st.subheader("처리 방법별 건수 (실제 계산값)")
+    st.dataframe(
+        pl.DataFrame({"method": list(perf_result["method_counts"].keys()), "count": list(perf_result["method_counts"].values())}),
+        use_container_width=True,
+    )
+    st.caption(
+        "고유 (거래처, 문맥) 조합 수가 전체 행 수보다 훨씬 적다는 것은, 실제로 같은 표현을 "
+        "반복해서 재계산하지 않고 있다는 뜻입니다 (Polars join으로 broadcast)."
+    )
+
 
 if page == "Dashboard":
     page_dashboard()
@@ -865,6 +1087,10 @@ elif page == "회사 금융기관 목록":
     page_company_list()
 elif page == "완전성 비교":
     page_completeness()
+elif page == "모델 성능":
+    page_model_performance()
+elif page == "처리 성능":
+    page_processing_performance()
 elif page == "금융기관 Master":
     page_institution_master()
 elif page == "Alias Master":

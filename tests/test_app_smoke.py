@@ -9,7 +9,14 @@ from sqlalchemy import delete, select
 from streamlit.testing.v1 import AppTest
 
 from src.database.connection import check_connection, get_session
-from src.database.models import CompletenessResult, FeedbackLabel, HumanReview, NormalizationResult, ProcessingRun
+from src.database.models import (
+    CompletenessResult,
+    FeedbackLabel,
+    HumanReview,
+    NormalizationResult,
+    PerformanceLog,
+    ProcessingRun,
+)
 
 APP_TIMEOUT = 20
 _DB_CONNECTED, _ = check_connection()
@@ -33,6 +40,7 @@ def _cleanup_run(run_id: int | None) -> None:
                 session.execute(delete(HumanReview).where(HumanReview.review_id.in_(review_ids)))
             session.execute(delete(NormalizationResult).where(NormalizationResult.result_id.in_(result_ids)))
         session.execute(delete(CompletenessResult).where(CompletenessResult.run_id == run_id))
+        session.execute(delete(PerformanceLog).where(PerformanceLog.run_id == run_id))
         session.execute(delete(ProcessingRun).where(ProcessingRun.run_id == run_id))
         session.commit()
     finally:
@@ -190,3 +198,55 @@ def test_completeness_comparison_finds_additional_candidate_via_ui():
 
     run_id = at.session_state["current_run_id"] if "current_run_id" in at.session_state else None
     _cleanup_run(run_id)
+
+
+@pytest.mark.skipif(not _DB_CONNECTED, reason="PostgreSQL 연결 없이는 모델 성능 화면을 끝까지 테스트할 수 없어 건너뜁니다.")
+def test_model_performance_runs_all_variants_via_ui():
+    at = AppTest.from_file("app.py")
+    at.run(timeout=APP_TIMEOUT)
+
+    at.sidebar.radio[0].set_value("금융기관 Master").run(timeout=APP_TIMEOUT)
+    at.button[0].click().run(timeout=APP_TIMEOUT)
+
+    at.sidebar.radio[0].set_value("모델 성능").run(timeout=APP_TIMEOUT)
+    at.button[0].click().run(timeout=60)
+
+    assert not at.exception
+    assert len(at.dataframe) > 0
+
+
+@pytest.mark.skipif(not _DB_CONNECTED, reason="PostgreSQL 연결 없이는 처리 성능 화면을 끝까지 테스트할 수 없어 건너뜁니다.")
+def test_processing_performance_measures_real_timing_via_ui():
+    at = AppTest.from_file("app.py")
+    at.run(timeout=APP_TIMEOUT)
+
+    at.sidebar.radio[0].set_value("금융기관 Master").run(timeout=APP_TIMEOUT)
+    at.button[0].click().run(timeout=APP_TIMEOUT)
+
+    at.sidebar.radio[0].set_value("처리 성능").run(timeout=APP_TIMEOUT)
+    at.number_input[0].set_value(10000).run(timeout=APP_TIMEOUT)
+    at.button[0].click().run(timeout=60)
+
+    assert not at.exception
+    metrics = {m.label: m.value for m in at.metric}
+    assert metrics.get("행 수") == "10,000"
+    # 고유 조합 수가 전체 행 수보다 훨씬 적어야 한다 (dedup/cache 효과 실제 확인).
+    unique_pairs = int(metrics["고유 (거래처,문맥) 조합"].replace(",", ""))
+    assert unique_pairs < 100
+
+    run_id = None
+    session = get_session()
+    try:
+        run = session.query(ProcessingRun).filter(ProcessingRun.file_name == "perf_test_10000rows.csv").first()
+        if run is not None:
+            run_id = run.run_id
+    finally:
+        session.close()
+    if run_id is not None:
+        performance_session = get_session()
+        try:
+            performance_session.execute(delete(PerformanceLog).where(PerformanceLog.run_id == run_id))
+            performance_session.commit()
+        finally:
+            performance_session.close()
+        _cleanup_run(run_id)
