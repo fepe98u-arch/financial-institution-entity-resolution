@@ -41,8 +41,15 @@ from src.database.results_repository import (
     count_human_reviews,
     find_result_ids,
     list_processing_runs,
+    save_completeness_results,
     save_normalization_results,
     start_processing_run,
+)
+from src.completeness_checker import (
+    compare_completeness,
+    get_institution_detail_rows,
+    normalize_company_list,
+    summarize_journal_by_institution,
 )
 from src.human_review import REVIEW_ACTIONS, apply_human_decision
 from src.normalization_pipeline import apply_normalization, build_persistable_rows
@@ -66,6 +73,14 @@ if "source_file_type" not in st.session_state:
     st.session_state.source_file_type = None
 if "current_run_id" not in st.session_state:
     st.session_state.current_run_id = None
+if "company_df" not in st.session_state:
+    st.session_state.company_df = None
+if "company_column" not in st.session_state:
+    st.session_state.company_column = None
+if "company_result_df" not in st.session_state:
+    st.session_state.company_result_df = None
+if "completeness_result" not in st.session_state:
+    st.session_state.completeness_result = None
 
 PAGES_IMPLEMENTED = [
     "Dashboard",
@@ -74,13 +89,13 @@ PAGES_IMPLEMENTED = [
     "금융기관 정규화",
     "Human Review",
     "Feedback",
+    "회사 금융기관 목록",
+    "완전성 비교",
     "금융기관 Master",
     "Alias Master",
     "Database 상태",
 ]
 PAGES_PLANNED = [
-    "회사 금융기관 목록 (Phase 7)",
-    "완전성 비교 (Phase 7)",
     "모델 성능 (Phase 8)",
     "처리 성능 (Phase 8)",
     "설정 (Phase 2+)",
@@ -89,7 +104,7 @@ PAGES_PLANNED = [
 st.sidebar.title(settings["app"]["title"])
 page = st.sidebar.radio("메뉴", PAGES_IMPLEMENTED + PAGES_PLANNED)
 st.sidebar.markdown("---")
-st.sidebar.caption("현재는 Phase 1~6만 구현되어 있습니다. 그 외 메뉴는 자리 표시일 뿐 동작하지 않습니다.")
+st.sidebar.caption("현재는 Phase 1~7만 구현되어 있습니다. 그 외 메뉴는 자리 표시일 뿐 동작하지 않습니다.")
 
 
 def page_dashboard():
@@ -664,6 +679,176 @@ def page_feedback():
         st.info("아직 쌓인 Feedback Label이 없습니다. Human Review에서 판단을 반영하면 여기에 쌓입니다.")
 
 
+def page_company_list():
+    st.title("회사 금융기관 목록")
+    st.caption(
+        "회사가 제출한 금융기관 목록을 업로드합니다. '완전성 비교'에서 분개장(정규화 결과)과 "
+        "비교합니다. 이 목록도 분개장과 같은 정규화 파이프라인(FAST PATH + Embedding)으로 "
+        "처리됩니다. 실제 고객 데이터는 샘플 폴더에 넣지 마세요."
+    )
+
+    uploaded = st.file_uploader(
+        "CSV 또는 Excel(xlsx) 파일", type=settings["file_upload"]["allowed_extensions"], key="company_uploader"
+    )
+    if uploaded is not None:
+        try:
+            df = load_journal_file(uploaded)
+        except Exception as e:
+            st.error(f"파일을 읽는 중 오류가 발생했습니다: {e}")
+        else:
+            st.session_state.company_df = df
+            st.session_state.company_column = None
+            st.session_state.company_result_df = None
+            st.session_state.completeness_result = None
+            st.success(f"{uploaded.name} 로드 완료 ({df.height:,}행 x {df.width}열)")
+
+    df = st.session_state.company_df
+    if df is None:
+        st.info("업로드할 파일이 없다면 테스트용 가상 목록을 만들 수 있습니다.")
+        if st.button("샘플 회사 목록 생성 (NH농협은행/신한은행만 포함 — KB국민은행은 의도적으로 제외)"):
+            sample_df = pl.DataFrame({"institution_name": ["NH농협은행", "신한은행"]})
+            st.session_state.company_df = sample_df
+            st.session_state.company_column = "institution_name"
+            st.session_state.company_result_df = None
+            st.session_state.completeness_result = None
+            st.success("샘플 목록을 만들었습니다.")
+        return
+
+    st.subheader("미리보기")
+    st.dataframe(df.head(settings["app"]["max_preview_rows"]), use_container_width=True)
+
+    columns = df.columns
+    default_index = columns.index(st.session_state.company_column) if st.session_state.company_column in columns else 0
+    selected_column = st.selectbox("금융기관명이 들어있는 컬럼", columns, index=default_index)
+    st.session_state.company_column = selected_column
+    st.caption(f"'{selected_column}' 컬럼의 고유 값 {df[selected_column].n_unique()}개를 금융기관명으로 사용합니다.")
+
+
+def page_completeness():
+    st.title("완전성 비교")
+    st.caption(
+        "A = 회사 제출 금융기관 목록, B = 분개장에서 발견된 금융기관(review_status가 AUTO 또는 "
+        "HUMAN인 것만). **B - A(회사 제출 목록에는 없지만 분개장에서 발견된 금융기관)**가 가장 "
+        "중요한 결과입니다 — '누락 확정'이 아니라 '추가 검토 후보'입니다. 최종 판단은 감사인이 "
+        "합니다."
+    )
+
+    journal_df = st.session_state.normalized_df
+    company_df = st.session_state.company_df
+    company_column = st.session_state.company_column
+
+    if journal_df is None:
+        st.info("먼저 '금융기관 정규화'에서 분개장 정규화를 실행하세요.")
+        return
+    if company_df is None or not company_column:
+        st.info("먼저 '회사 금융기관 목록'에서 목록을 업로드하고 컬럼을 지정하세요.")
+        return
+
+    if not _show_db_connection_banner():
+        return
+
+    threshold = get_fuzzy_auto_threshold()
+    embedding_floor = get_context_rerank_embedding_floor()
+    amount_column = st.session_state.column_mapping.get("amount")
+
+    if st.button("완전성 비교 실행"):
+        session = get_session()
+        try:
+            init_db(get_engine())
+            institutions = list_institutions_with_aliases(session, active_only=True)
+        finally:
+            session.close()
+
+        if not institutions:
+            st.warning("등록된 금융기관이 없습니다. '금융기관 Master' 메뉴에서 먼저 등록하세요.")
+            return
+
+        with st.spinner("회사 제출 목록을 정규화하는 중..."):
+            company_result_df, embedding_error = normalize_company_list(
+                company_df, company_column, institutions, threshold, embedding_floor
+            )
+        st.session_state.company_result_df = company_result_df
+        if embedding_error:
+            st.warning(embedding_error)
+
+        result = compare_completeness(company_result_df, journal_df, company_column)
+        st.session_state.completeness_result = result
+
+        run_id = st.session_state.current_run_id
+        if run_id is not None:
+            name_to_institution = {i.canonical_name: i for i in institutions}
+            all_names = sorted(set(result["both"]) | set(result["additional_candidates"]) | set(result["company_only"]))
+            summary_df = summarize_journal_by_institution(journal_df, all_names, amount_column)
+            summary_by_name = {r["canonical_institution"]: r for r in summary_df.to_dicts()}
+
+            rows = []
+            for name in all_names:
+                institution = name_to_institution.get(name)
+                summary = summary_by_name.get(name, {})
+                if name in result["additional_candidates"]:
+                    status = "ADDITIONAL_CANDIDATE"
+                elif name in result["company_only"]:
+                    status = "COMPANY_ONLY_NOT_FOUND"
+                else:
+                    status = "MATCHED"
+                rows.append(
+                    {
+                        "institution_id": institution.institution_id if institution else None,
+                        "canonical_name": name,
+                        "company_list_exists": name in result["both"] or name in result["company_only"],
+                        "journal_detected": name in result["both"] or name in result["additional_candidates"],
+                        "journal_count": summary.get("journal_count", 0),
+                        "total_amount": summary.get("total_amount"),
+                        "review_status": status,
+                    }
+                )
+            session = get_session()
+            try:
+                save_completeness_results(session, run_id, rows)
+                st.caption(f"완전성 비교 결과 {len(rows)}건을 PostgreSQL(run_id={run_id})에 저장했습니다.")
+            except Exception as e:
+                st.warning(f"완전성 비교 결과를 PostgreSQL에 저장하지 못했습니다: {e}")
+            finally:
+                session.close()
+        else:
+            st.caption("먼저 '금융기관 정규화'를 실행해서 run_id를 만들면, 이 비교 결과도 PostgreSQL에 저장됩니다.")
+
+    result = st.session_state.completeness_result
+    if result is None:
+        return
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("A ∩ B (양쪽 다 있음)", len(result["both"]))
+    col2.metric("B - A (추가 검토 후보)", len(result["additional_candidates"]))
+    col3.metric("A - B (회사 목록에만 있음)", len(result["company_only"]))
+
+    if result["unidentified_in_company_list"]:
+        st.warning(f"회사 제출 목록에서 자동으로 식별하지 못한 항목: {result['unidentified_in_company_list']}")
+
+    st.subheader("추가 검토 후보 (B - A) — 가장 중요")
+    if not result["additional_candidates"]:
+        st.success("추가 검토 후보가 없습니다.")
+    else:
+        summary_df = summarize_journal_by_institution(journal_df, result["additional_candidates"], amount_column)
+        st.dataframe(summary_df, use_container_width=True)
+
+        detail_columns = [
+            c
+            for c in ["detected_expression", "context_text", "normalization_method", "top1_score", "review_status"]
+            if c in journal_df.columns
+        ]
+        selected = st.selectbox("상세 분개 보기", result["additional_candidates"])
+        if selected:
+            detail = get_institution_detail_rows(journal_df, selected, detail_columns)
+            st.dataframe(detail, use_container_width=True)
+
+    st.subheader("A ∩ B (회사 목록에도 있고 분개장에서도 발견됨)")
+    st.write(result["both"] or "없음")
+
+    st.subheader("A - B (회사 목록에는 있으나 분개장에서 발견되지 않음)")
+    st.write(result["company_only"] or "없음")
+
+
 if page == "Dashboard":
     page_dashboard()
 elif page == "분개장 업로드":
@@ -676,6 +861,10 @@ elif page == "Human Review":
     page_human_review()
 elif page == "Feedback":
     page_feedback()
+elif page == "회사 금융기관 목록":
+    page_company_list()
+elif page == "완전성 비교":
+    page_completeness()
 elif page == "금융기관 Master":
     page_institution_master()
 elif page == "Alias Master":

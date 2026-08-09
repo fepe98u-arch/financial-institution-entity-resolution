@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import delete, select
 
 from src.database.connection import check_connection, get_engine, get_session
-from src.database.models import FeedbackLabel, HumanReview, NormalizationResult, ProcessingRun
+from src.database.models import CompletenessResult, FeedbackLabel, HumanReview, NormalizationResult, ProcessingRun
 from src.database.repository import init_db
 
 _connected, _message = check_connection()
@@ -130,5 +130,39 @@ def test_apply_review_and_add_human_review_and_feedback(db_session):
     assert label.label_id is not None
 
     db_session.execute(delete(FeedbackLabel).where(FeedbackLabel.label_id == label.label_id))
+    db_session.commit()
+    _cleanup(db_session, run.run_id)
+
+
+def test_save_and_query_completeness_results(db_session):
+    from src.database.results_repository import save_completeness_results, start_processing_run
+
+    run = start_processing_run(db_session, "pytest_completeness.csv", "csv", total_rows=1)
+    rows = [
+        {
+            "institution_id": None,
+            "canonical_name": "KB국민은행",
+            "company_list_exists": False,
+            "journal_detected": True,
+            "journal_count": 3,
+            "total_amount": 15000,
+            "review_status": "ADDITIONAL_CANDIDATE",
+        }
+    ]
+    save_completeness_results(db_session, run.run_id, rows)
+
+    results = list(db_session.scalars(select(CompletenessResult).where(CompletenessResult.run_id == run.run_id)))
+    assert len(results) == 1
+    assert results[0].canonical_name == "KB국민은행"
+    assert results[0].journal_count == 3
+
+    # 같은 run에 다시 저장하면 이전 결과를 지우고 새로 저장해야 한다 (재실행 지원).
+    save_completeness_results(db_session, run.run_id, rows)
+    results_after = list(
+        db_session.scalars(select(CompletenessResult).where(CompletenessResult.run_id == run.run_id))
+    )
+    assert len(results_after) == 1
+
+    db_session.execute(delete(CompletenessResult).where(CompletenessResult.run_id == run.run_id))
     db_session.commit()
     _cleanup(db_session, run.run_id)

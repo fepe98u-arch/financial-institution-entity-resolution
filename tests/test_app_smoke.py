@@ -9,7 +9,7 @@ from sqlalchemy import delete, select
 from streamlit.testing.v1 import AppTest
 
 from src.database.connection import check_connection, get_session
-from src.database.models import FeedbackLabel, HumanReview, NormalizationResult, ProcessingRun
+from src.database.models import CompletenessResult, FeedbackLabel, HumanReview, NormalizationResult, ProcessingRun
 
 APP_TIMEOUT = 20
 _DB_CONNECTED, _ = check_connection()
@@ -32,6 +32,7 @@ def _cleanup_run(run_id: int | None) -> None:
                 session.execute(delete(FeedbackLabel).where(FeedbackLabel.source_review_id.in_(review_ids)))
                 session.execute(delete(HumanReview).where(HumanReview.review_id.in_(review_ids)))
             session.execute(delete(NormalizationResult).where(NormalizationResult.result_id.in_(result_ids)))
+        session.execute(delete(CompletenessResult).where(CompletenessResult.run_id == run_id))
         session.execute(delete(ProcessingRun).where(ProcessingRun.run_id == run_id))
         session.commit()
     finally:
@@ -153,3 +154,39 @@ def test_human_review_approve_via_ui():
     assert any("반영했습니다" in s.value for s in at.success)
 
     _cleanup_run(at.session_state["current_run_id"] if "current_run_id" in at.session_state else None)
+
+
+@pytest.mark.skipif(not _DB_CONNECTED, reason="PostgreSQL 연결 없이는 완전성 비교 화면을 끝까지 테스트할 수 없어 건너뜁니다.")
+def test_completeness_comparison_finds_additional_candidate_via_ui():
+    """샘플 회사 목록에서 일부러 뺀 KB국민은행이 '추가 검토 후보(B-A)'로 잡히는지 화면으로 확인한다."""
+    at = AppTest.from_file("app.py")
+    at.run(timeout=APP_TIMEOUT)
+
+    at.sidebar.radio[0].set_value("금융기관 Master").run(timeout=APP_TIMEOUT)
+    at.button[0].click().run(timeout=APP_TIMEOUT)
+
+    at.sidebar.radio[0].set_value("분개장 업로드").run(timeout=APP_TIMEOUT)
+    at.button[0].click().run(timeout=APP_TIMEOUT)
+
+    at.sidebar.radio[0].set_value("컬럼 Mapping").run(timeout=APP_TIMEOUT)
+    at.selectbox[2].set_value("거래처").run(timeout=APP_TIMEOUT)
+    at.selectbox[3].set_value("적요").run(timeout=APP_TIMEOUT)
+    at.selectbox[4].set_value("계정과목").run(timeout=APP_TIMEOUT)
+    at.selectbox[5].set_value("상대계정").run(timeout=APP_TIMEOUT)
+    at.button[0].click().run(timeout=APP_TIMEOUT)
+
+    at.sidebar.radio[0].set_value("금융기관 정규화").run(timeout=APP_TIMEOUT)
+    at.button[0].click().run(timeout=APP_TIMEOUT)
+
+    at.sidebar.radio[0].set_value("회사 금융기관 목록").run(timeout=APP_TIMEOUT)
+    at.button[0].click().run(timeout=APP_TIMEOUT)  # 샘플 회사 목록 생성 (NH농협은행/신한은행만)
+
+    at.sidebar.radio[0].set_value("완전성 비교").run(timeout=APP_TIMEOUT)
+    at.button[0].click().run(timeout=APP_TIMEOUT)  # 완전성 비교 실행
+
+    assert not at.exception
+    metrics = {m.label: m.value for m in at.metric}
+    assert metrics.get("B - A (추가 검토 후보)") == "1"
+
+    run_id = at.session_state["current_run_id"] if "current_run_id" in at.session_state else None
+    _cleanup_run(run_id)

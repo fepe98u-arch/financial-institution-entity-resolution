@@ -1,5 +1,6 @@
 """정규화 실행 이력(processing_runs), 분석 결과(normalization_results),
-Human Review(human_reviews), Feedback Label(feedback_labels)에 대한 저장/조회 함수.
+Human Review(human_reviews), Feedback Label(feedback_labels), 완전성 비교
+결과(completeness_results)에 대한 저장/조회 함수.
 
 institution_master/institution_alias는 repository.py에서, 실행 결과와 사람의
 판단은 이 파일에서 다룬다 (역할 분리).
@@ -11,10 +12,10 @@ institution_master/institution_alias는 repository.py에서, 실행 결과와 �
 
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from src.database.models import FeedbackLabel, HumanReview, NormalizationResult, ProcessingRun
+from src.database.models import CompletenessResult, FeedbackLabel, HumanReview, NormalizationResult, ProcessingRun
 
 # ---------------------------------------------------------------------------
 # processing_runs
@@ -169,3 +170,26 @@ def add_feedback_label(
 
 def count_feedback_labels(session: Session) -> int:
     return session.scalar(select(func.count()).select_from(FeedbackLabel)) or 0
+
+
+# ---------------------------------------------------------------------------
+# completeness_results (Phase 7)
+# ---------------------------------------------------------------------------
+
+
+def save_completeness_results(session: Session, run_id: int, rows: list[dict]) -> list[CompletenessResult]:
+    """완전성 비교 결과(회사 제출 목록 vs 분개장 발견 결과)를 run_id에 연결해서 저장한다.
+
+    기존에 같은 run_id로 저장된 결과가 있으면 먼저 지우고 다시 저장한다
+    (완전성 비교는 같은 run에 대해 여러 번 다시 실행할 수 있기 때문).
+    """
+    session.execute(delete(CompletenessResult).where(CompletenessResult.run_id == run_id))
+    objects = [CompletenessResult(run_id=run_id, **row) for row in rows]
+    session.add_all(objects)
+    session.commit()
+    return objects
+
+
+def get_completeness_results(session: Session, run_id: int) -> list[CompletenessResult]:
+    stmt = select(CompletenessResult).where(CompletenessResult.run_id == run_id)
+    return list(session.scalars(stmt))
