@@ -93,10 +93,13 @@ class NormalizationResult(Base):
     institution_id: Mapped[int | None] = mapped_column(ForeignKey("institution_master.institution_id"))
     institution_type: Mapped[str | None] = mapped_column(String(50))
     normalization_method: Mapped[str] = mapped_column(String(30), nullable=False)
-    top1_score: Mapped[float | None] = mapped_column(Numeric(6, 4))
+    # 주의: 이 점수는 방법에 따라 척도가 다르다. EXACT/ALIAS/FUZZY는 0~100점
+    # (rapidfuzz), EMBEDDING/CONTEXT_RERANK는 0~1 코사인 유사도다. normalization_method를
+    # 같이 봐야 의미를 알 수 있다. Numeric(7,4)는 두 척도를 모두 담을 수 있게 넉넉히 잡은 것이다.
+    top1_score: Mapped[float | None] = mapped_column(Numeric(7, 4))
     top2_candidate: Mapped[str | None] = mapped_column(String(200))
-    top2_score: Mapped[float | None] = mapped_column(Numeric(6, 4))
-    score_margin: Mapped[float | None] = mapped_column(Numeric(6, 4))
+    top2_score: Mapped[float | None] = mapped_column(Numeric(7, 4))
+    score_margin: Mapped[float | None] = mapped_column(Numeric(7, 4))
     review_status: Mapped[str] = mapped_column(String(30), nullable=False, default="UNRESOLVED")
     context_text: Mapped[str | None] = mapped_column(Text)
     reason: Mapped[str | None] = mapped_column(Text)

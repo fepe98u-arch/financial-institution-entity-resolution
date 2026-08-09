@@ -317,3 +317,42 @@ def apply_normalization(
     )
     result = result.drop([f"{field}__ai" for field in RESULT_FIELDS])
     return result, None
+
+
+def build_persistable_rows(
+    result_df: pl.DataFrame,
+    institutions_by_id: dict,
+    voucher_column: str | None = None,
+    context_column: str | None = None,
+) -> list[dict]:
+    """normalization_results 테이블(Phase 6)에 저장할 행(dict) 목록을 만든다.
+
+    voucher_column이 매핑되어 있으면 그 값을 original_row_id로 쓰고, 없으면
+    행 순서 번호를 문자열로 쓴다. institution_type은 institutions_by_id로
+    조회한다 (파이프라인 결과 자체에는 institution_type이 없기 때문).
+    """
+    rows = []
+    for i, row in enumerate(result_df.to_dicts()):
+        institution_id = row.get("institution_id")
+        institution = institutions_by_id.get(institution_id) if institution_id is not None else None
+        original_row_id = row.get(voucher_column) if voucher_column else None
+        rows.append(
+            {
+                "original_row_id": str(original_row_id) if original_row_id is not None else str(i),
+                "detected_expression": row.get("detected_expression"),
+                "normalized_expression": row.get("normalized_expression"),
+                "canonical_institution": row.get("canonical_institution"),
+                "institution_id": institution_id,
+                "institution_type": institution.institution_type if institution else None,
+                "normalization_method": row.get("normalization_method"),
+                "top1_score": row.get("top1_score"),
+                "top2_candidate": row.get("top2_candidate"),
+                "top2_score": row.get("top2_score"),
+                "score_margin": row.get("score_margin"),
+                "review_status": row.get("review_status"),
+                "context_text": row.get(context_column) if context_column else None,
+                "reason": row.get("reason"),
+                "user_confirmed": bool(row.get("user_confirmed", False)),
+            }
+        )
+    return rows

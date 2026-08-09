@@ -26,7 +26,7 @@ Context-Aware Financial Institution Entity Resolution
 확정"하지 않습니다. 최종 판단은 항상 감사인이 합니다. 이 프로그램은 "빠뜨리기
 쉬운 후보를 찾아 보여주는" 보조 도구입니다.
 
-## 지금 실제로 되는 것 / 안 되는 것 (Phase 5 기준)
+## 지금 실제로 되는 것 / 안 되는 것 (Phase 6 기준)
 
 **실제로 구현되어 동작하는 기능**
 - 분개장 CSV/Excel 파일 업로드, 컬럼 매핑, context_text 생성 (Phase 1)
@@ -59,24 +59,37 @@ Context-Aware Financial Institution Entity Resolution
 - **Human Review 화면**: 검토 필요 항목을 원문/문맥/추천 기관/Top1·Top2
   점수/판단 근거와 함께 보여주고, "승인 / 다른 기관으로 변경 / 금융기관
   아님 / 판단 보류" 중 하나를 선택해 반영할 수 있습니다.
+- **PostgreSQL 저장** (Phase 6, 신규): "정규화 실행"을 누르면 그 결과가
+  `processing_runs`(실행 이력) + `normalization_results`(행별 정규화 결과)에
+  실제로 저장됩니다. Human Review에서 판단을 반영하면 `human_reviews`(누가
+  무엇을 어떻게 바꿨는지)와 `feedback_labels`(향후 모델 개선용 라벨)에도
+  저장됩니다. "Database 상태"/"Feedback" 화면에서 실제 저장된 건수를 조회할
+  수 있습니다.
+- **작업 중 실제로 발견하고 고친 버그**: `top1_score`/`top2_score`/
+  `score_margin` 컬럼을 처음에 `NUMERIC(6,4)`(최대 99.9999)로 만들어서,
+  EXACT/ALIAS 매칭의 100.0점을 저장하려 하자 `NumericValueOutOfRange` 오류가
+  났습니다. `NUMERIC(7,4)`로 넓혀서 고쳤습니다 (이 컬럼은 방법에 따라 0~100점
+  척도와 0~1 코사인 유사도 척도가 섞여 있다는 점을 모델 주석에 남겨뒀습니다).
 - Dashboard에 정규화 방법별 건수(EXACT/ALIAS/FUZZY/EMBEDDING/CONTEXT_RERANK/
   HUMAN/UNRESOLVED), 자동 확정/검토 필요 건수를 실제 계산값으로 표시
-- pytest 자동 테스트 53개 (아래 "테스트 실행 결과" 참고)
+- pytest 자동 테스트 58개 (아래 "테스트 실행 결과" 참고)
 
 **아직 구현되지 않은 기능**
-- Human Review에서 내린 판단을 PostgreSQL(human_reviews 테이블)에 저장하는
-  기능 — 지금은 화면 세션에만 반영되고, 새로고침하면 사라집니다 (Phase 6)
-- Feedback Label 축적, 향후 모델 개선용 데이터 저장 (Phase 6)
 - 회사 제출 금융기관 목록과의 완전성 비교 (Phase 7)
-- normalization_results/candidate_scores를 PostgreSQL에 저장하는 기능 (지금은
-  화면에서만 보여주고 DB에 저장하지 않음)
 - Cross-Encoder 재순위화 — Context Reranking은 실제 Cross-Encoder가 아니라
   키워드 규칙 기반 Fallback입니다 (계획서 21번 섹션이 허용하는 방식이며,
   이 README와 코드 모두에서 Cross-Encoder를 썼다고 주장하지 않습니다)
-- 대용량(10만/30만 건) 성능 테스트, Excel 결과 다운로드
+- `candidate_scores`(Embedding Top-K 후보 전체) 저장 — 지금은 top1/top2만
+  `normalization_results`에 저장하고, 후보 전체 목록은 화면에서만 보여줍니다
+- Feedback Label로 모델을 실제로 재학습/개선하는 기능 (지금은 데이터를
+  쌓기만 함 — 계획서도 이 범위까지만 요구함)
+- 대용량(10만/30만 건) 성능 테스트, Excel 결과 다운로드. **특히
+  `normalization_results` 저장은 지금 행마다 Python 객체를 만들어
+  `session.add_all()`로 저장하는 방식인데, 수백 행에서는 문제없지만 30만
+  행에서 얼마나 걸리는지는 아직 측정하지 않았습니다** (Phase 8에서 확인 예정)
 - 모델 성능(Accuracy/Precision/Recall, False Normalization Rate 등) 평가
 
-이 문서 뒤쪽의 "다음 단계"에 Phase 6부터의 계획이 있습니다.
+이 문서 뒤쪽의 "다음 단계"에 Phase 7부터의 계획이 있습니다.
 
 ## 왜 이런 기술을 쓰는가 (비개발자용 설명)
 
@@ -135,8 +148,9 @@ src/fuzzy_matcher.py            rapidfuzz 유사도 매칭 (Phase 3)
 src/embedding_service.py        임베딩 모델 로딩/인코딩 (Phase 4)
 src/candidate_retriever.py      Embedding 기반 후보 검색 (Phase 4)
 src/context_reranker.py         문맥 기반 재평가 규칙 (Phase 5)
-src/human_review.py             Human Review 판단 반영 (Phase 5, DB 저장은 Phase 6)
+src/human_review.py             Human Review 판단을 화면 세션에 반영 (Phase 5)
 src/normalization_pipeline.py   FAST PATH + AI PATH + Context Rerank 파이프라인
+src/database/results_repository.py  실행 이력/정규화 결과/Human Review/Feedback 저장·조회 (Phase 6)
 tests/                          pytest 자동 테스트
 ```
 
@@ -168,7 +182,9 @@ tests/                          pytest 자동 테스트
    4. "금융기관 정규화" → (처음 한 번은 임베딩 모델 다운로드로 몇 분 걸릴 수
       있음) "정규화 실행" 버튼 → 결과 미리보기
    5. "Human Review" → 검토 필요 항목을 확인하고 승인/변경/보류 처리
+      (여기서 내린 판단은 PostgreSQL human_reviews/feedback_labels에 저장됨)
    6. "Dashboard" → 방법별 처리 건수 확인
+   7. "Database 상태" / "Feedback" → 실행 이력, 저장된 리뷰/피드백 건수 확인
 
 ## 테스트 실행 방법 / 결과
 
@@ -176,11 +192,13 @@ tests/                          pytest 자동 테스트
 .venv\Scripts\pytest -v
 ```
 
-**실제로 실행한 결과 (2026-08-09 기준)**: 53개 전부 통과 (`53 passed`).
+**실제로 실행한 결과 (2026-08-09 기준)**: 58개 전부 통과 (`58 passed`).
 
 - DB 연결, FAST PATH(Exact/Alias/Fuzzy), Embedding, Context Reranking, Human
-  Review까지 화면 흐름 전체(마스터 시딩 → 샘플 생성 → 컬럼 매핑 → 정규화
-  실행 → Human Review 승인)를 실제 PostgreSQL + 실제 임베딩 모델로 확인.
+  Review, **PostgreSQL 저장(processing_runs/normalization_results/
+  human_reviews/feedback_labels)까지** 화면 흐름 전체(마스터 시딩 → 샘플
+  생성 → 컬럼 매핑 → 정규화 실행 → Human Review 승인)를 실제 PostgreSQL +
+  실제 임베딩 모델로 확인.
 - "OO농협"/"농협유통"/"NH투자"가 FAST PATH(rapidfuzz 45~60점), Embedding
   단독(문맥 없음), Context Rerank(문맥 있어도 혼동 방지 키워드 있음) 세
   경로 모두에서 절대 자동 확정되지 않는 것을 각각 실제 값으로 검증.
@@ -190,11 +208,16 @@ tests/                          pytest 자동 테스트
 - FAST PATH의 Fuzzy 자동 확정에 대한 안전장치(혼동 방지 키워드 거부권)가
   실제로 동작하는지도 별도로 검증
   (`test_apply_normalization_with_context_column_end_to_end`).
-- 임베딩 모델을 다운로드할 수 없는 환경에서는 이 테스트들이 실패가 아니라
-  건너뜀(skip) 처리되도록 만들어뒀습니다 (PostgreSQL과 동일한 패턴).
+- Streamlit AppTest로 화면을 실제로 구동해서 "정규화 실행 → PostgreSQL에
+  저장 → Human Review에서 승인 → human_reviews/feedback_labels에 저장"까지
+  전체 흐름을 확인했고, 테스트가 만든 데이터는 테스트 종료 시 직접 지웁니다
+  (`_cleanup_run`) — 실행 후 실제로 `SELECT count(*)`로 DB가 깨끗해지는 것도
+  확인했습니다.
+- 임베딩 모델/PostgreSQL을 사용할 수 없는 환경에서는 관련 테스트가 실패가
+  아니라 건너뜀(skip) 처리되도록 만들어뒀습니다.
 
-아직 완전성 비교, Feedback 관련 테스트는 해당 기능이 구현되지 않아 존재하지
-않습니다. 30만 행 대용량 테스트도 아직 실행하지 않았습니다 (Phase 8에서 진행).
+아직 완전성 비교 관련 테스트는 해당 기능이 구현되지 않아 존재하지 않습니다.
+30만 행 대용량 테스트/저장 성능도 아직 측정하지 않았습니다 (Phase 8에서 진행).
 
 ## PostgreSQL 연결 방법
 
@@ -258,10 +281,8 @@ FROM institution_alias
 WHERE institution_id = :institution_id;
 ```
 
-아래 두 쿼리는 `normalization_results`/`human_reviews`에 실제 데이터가
-쌓이면 쓸 수 있는 예시입니다 (정규화/Human Review 결과는 아직 이 테이블에
-저장하지 않고 화면에서만 보여주므로, 지금은 테이블이 비어 있습니다 —
-저장 기능은 Phase 6에서 추가할 계획입니다):
+Phase 6부터는 아래 쿼리도 실제 데이터로 실행됩니다 ("정규화 실행"을 한 번
+이상 눌러야 `normalization_results`에 데이터가 쌓입니다):
 
 ```sql
 -- 수동 검토가 필요한 건 조회
@@ -269,6 +290,15 @@ SELECT * FROM normalization_results WHERE review_status = 'NEEDS_REVIEW';
 
 -- 사용자가 AI 추천을 다른 기관으로 바꾼 사례 조회
 SELECT * FROM human_reviews WHERE review_action = 'CHANGE_INSTITUTION';
+
+-- 특정 실행(run)의 처리 결과 요약
+SELECT normalization_method, review_status, COUNT(*)
+FROM normalization_results
+WHERE run_id = :run_id
+GROUP BY normalization_method, review_status;
+
+-- 향후 모델 개선에 쓸 수 있는 확정 라벨 조회
+SELECT original_expression, context_text, confirmed_label FROM feedback_labels;
 ```
 
 ## 보안 관련 주의사항
@@ -282,15 +312,14 @@ SELECT * FROM human_reviews WHERE review_action = 'CHANGE_INSTITUTION';
 - 외부 LLM API(OpenAI, Claude API 등)를 호출하지 않습니다. AI 기능은 모두
   내 컴퓨터에서 실행되는 모델을 사용할 계획입니다.
 
-## 다음 단계 (계획서 기준 Phase 6~9)
+## 다음 단계 (계획서 기준 Phase 7~9)
 
 - ~~Phase 2: PostgreSQL 연결, 금융기관 Master/별칭 테이블~~ (완료)
 - ~~Phase 3: 정확 일치, 별칭 매칭, 유사도(rapidfuzz) 매칭~~ (완료)
 - ~~Phase 4: Embedding 모델, 후보 검색~~ (완료)
-- ~~Phase 5: 문맥 기반 재평가(Context Reranking), Human Review 화면~~ (완료.
-  Cross-Encoder가 아닌 키워드 규칙 기반 Fallback이며, 이 점을 코드/README에
-  명시함. Human Review는 화면 반영까지만 되고 DB 저장은 Phase 6)
-- Phase 6: Human Review 결과 PostgreSQL 저장, Feedback 데이터 축적
+- ~~Phase 5: 문맥 기반 재평가(Context Reranking), Human Review 화면~~ (완료)
+- ~~Phase 6: Human Review 결과 PostgreSQL 저장, Feedback 데이터 축적~~ (완료.
+  candidate_scores(Top-K 후보 전체 저장)와 모델 재학습은 아직 없음)
 - Phase 7: 회사 제출 금융기관 목록 업로드, 완전성 비교(누락 후보 도출)
 - Phase 8: 성능 평가, 대용량(30만 건) 테스트, Excel 결과 다운로드
 - Phase 9: pytest 보강, README 최종화

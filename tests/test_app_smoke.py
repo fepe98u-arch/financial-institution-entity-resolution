@@ -5,12 +5,37 @@ context_text 생성까지 에러 없이 동작하는지 확인한다.
 """
 
 import pytest
+from sqlalchemy import delete, select
 from streamlit.testing.v1 import AppTest
 
-from src.database.connection import check_connection
+from src.database.connection import check_connection, get_session
+from src.database.models import FeedbackLabel, HumanReview, NormalizationResult, ProcessingRun
 
 APP_TIMEOUT = 20
 _DB_CONNECTED, _ = check_connection()
+
+
+def _cleanup_run(run_id: int | None) -> None:
+    """AppTest가 만든 processing_run과 그에 딸린 결과/리뷰/피드백을 정리한다."""
+    if run_id is None:
+        return
+    session = get_session()
+    try:
+        result_ids = list(
+            session.scalars(select(NormalizationResult.result_id).where(NormalizationResult.run_id == run_id))
+        )
+        if result_ids:
+            review_ids = list(
+                session.scalars(select(HumanReview.review_id).where(HumanReview.result_id.in_(result_ids)))
+            )
+            if review_ids:
+                session.execute(delete(FeedbackLabel).where(FeedbackLabel.source_review_id.in_(review_ids)))
+                session.execute(delete(HumanReview).where(HumanReview.review_id.in_(review_ids)))
+            session.execute(delete(NormalizationResult).where(NormalizationResult.result_id.in_(result_ids)))
+        session.execute(delete(ProcessingRun).where(ProcessingRun.run_id == run_id))
+        session.commit()
+    finally:
+        session.close()
 
 
 def test_dashboard_loads_without_error():
@@ -88,6 +113,8 @@ def test_normalization_end_to_end_via_ui():
     assert not at.exception
     assert any("정규화를 완료" in s.value for s in at.success)
 
+    _cleanup_run(at.session_state["current_run_id"] if "current_run_id" in at.session_state else None)
+
 
 @pytest.mark.skipif(not _DB_CONNECTED, reason="PostgreSQL 연결 없이는 Human Review 화면을 끝까지 테스트할 수 없어 건너뜁니다.")
 def test_human_review_approve_via_ui():
@@ -116,6 +143,7 @@ def test_human_review_approve_via_ui():
 
     if not at.radio:
         # 검토 필요 항목이 하나도 없는 드문 경우 (샘플 데이터 특성상 거의 발생하지 않음)
+        _cleanup_run(at.session_state["current_run_id"] if "current_run_id" in at.session_state else None)
         return
 
     at.radio[0].set_value("승인 (제안 기관으로 확정)").run(timeout=APP_TIMEOUT)
@@ -123,3 +151,5 @@ def test_human_review_approve_via_ui():
 
     assert not at.exception
     assert any("반영했습니다" in s.value for s in at.success)
+
+    _cleanup_run(at.session_state["current_run_id"] if "current_run_id" in at.session_state else None)

@@ -4,6 +4,7 @@ Phase 1 범위: 분개장 업로드, 샘플 데이터 생성, 컬럼 매핑, con
 그 외 사이드바 메뉴는 이후 Phase에서 구현되는 자리 표시(placeholder)이다.
 """
 
+import time
 from pathlib import Path
 
 import polars as pl
@@ -31,8 +32,20 @@ from src.database.repository import (
     set_alias_active,
     set_institution_active,
 )
+from src.database.results_repository import (
+    add_feedback_label,
+    add_human_review,
+    apply_review_to_results,
+    complete_processing_run,
+    count_feedback_labels,
+    count_human_reviews,
+    find_result_ids,
+    list_processing_runs,
+    save_normalization_results,
+    start_processing_run,
+)
 from src.human_review import REVIEW_ACTIONS, apply_human_decision
-from src.normalization_pipeline import apply_normalization
+from src.normalization_pipeline import apply_normalization, build_persistable_rows
 from src.synthetic_data_generator import generate_synthetic_journal
 
 INSTITUTION_TYPES = ["BANK", "SECURITIES", "INSURANCE", "OTHER"]
@@ -47,6 +60,12 @@ if "column_mapping" not in st.session_state:
     st.session_state.column_mapping = {}
 if "normalized_df" not in st.session_state:
     st.session_state.normalized_df = None
+if "source_file_name" not in st.session_state:
+    st.session_state.source_file_name = None
+if "source_file_type" not in st.session_state:
+    st.session_state.source_file_type = None
+if "current_run_id" not in st.session_state:
+    st.session_state.current_run_id = None
 
 PAGES_IMPLEMENTED = [
     "Dashboard",
@@ -54,6 +73,7 @@ PAGES_IMPLEMENTED = [
     "컬럼 Mapping",
     "금융기관 정규화",
     "Human Review",
+    "Feedback",
     "금융기관 Master",
     "Alias Master",
     "Database 상태",
@@ -63,14 +83,13 @@ PAGES_PLANNED = [
     "완전성 비교 (Phase 7)",
     "모델 성능 (Phase 8)",
     "처리 성능 (Phase 8)",
-    "Feedback (Phase 6)",
     "설정 (Phase 2+)",
 ]
 
 st.sidebar.title(settings["app"]["title"])
 page = st.sidebar.radio("메뉴", PAGES_IMPLEMENTED + PAGES_PLANNED)
 st.sidebar.markdown("---")
-st.sidebar.caption("현재는 Phase 1~5만 구현되어 있습니다. 그 외 메뉴는 자리 표시일 뿐 동작하지 않습니다.")
+st.sidebar.caption("현재는 Phase 1~6만 구현되어 있습니다. 그 외 메뉴는 자리 표시일 뿐 동작하지 않습니다.")
 
 
 def page_dashboard():
@@ -118,6 +137,9 @@ def page_upload():
                 st.session_state.journal_df = df
                 st.session_state.column_mapping = {}
                 st.session_state.normalized_df = None
+                st.session_state.current_run_id = None
+                st.session_state.source_file_name = uploaded.name
+                st.session_state.source_file_type = uploaded.name.rsplit(".", 1)[-1].lower()
                 st.success(f"{uploaded.name} 로드 완료 ({df.height:,}행 x {df.width}열)")
 
     with tab_sample:
@@ -134,6 +156,9 @@ def page_upload():
             st.session_state.journal_df = df
             st.session_state.column_mapping = {}
             st.session_state.normalized_df = None
+            st.session_state.current_run_id = None
+            st.session_state.source_file_name = "synthetic_sample.csv"
+            st.session_state.source_file_type = "synthetic"
             out_dir = Path("data/synthetic")
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / "sample_journal.csv"
@@ -234,6 +259,7 @@ def page_normalization():
             st.warning("등록된 금융기관이 없습니다. '금융기관 Master' 메뉴에서 먼저 등록하세요.")
             return
 
+        started = time.perf_counter()
         with st.spinner("정규화 실행 중..."):
             result_df, embedding_error = apply_normalization(
                 df,
@@ -244,10 +270,35 @@ def page_normalization():
                 context_column="context_text" if has_context else None,
                 embedding_floor=embedding_floor,
             )
+        elapsed_seconds = time.perf_counter() - started
         st.session_state.normalized_df = result_df
         if embedding_error:
             st.warning(embedding_error)
-        st.success(f"{result_df.height:,}행에 대해 정규화를 완료했습니다.")
+        st.success(f"{result_df.height:,}행에 대해 정규화를 완료했습니다. ({elapsed_seconds:.2f}초)")
+
+        institutions_by_id = {i.institution_id: i for i in institutions}
+        persistable_rows = build_persistable_rows(
+            result_df,
+            institutions_by_id,
+            voucher_column=mapping.get("voucher_no"),
+            context_column="context_text" if has_context else None,
+        )
+        session = get_session()
+        try:
+            run = start_processing_run(
+                session,
+                file_name=st.session_state.source_file_name or "unknown",
+                file_type=st.session_state.source_file_type or "unknown",
+                total_rows=result_df.height,
+            )
+            save_normalization_results(session, run.run_id, persistable_rows)
+            complete_processing_run(session, run.run_id, processing_seconds=elapsed_seconds)
+            st.session_state.current_run_id = run.run_id
+            st.caption(f"정규화 결과 {len(persistable_rows):,}행을 PostgreSQL(run_id={run.run_id})에 저장했습니다.")
+        except Exception as e:
+            st.warning(f"결과를 PostgreSQL에 저장하지 못했습니다 (화면 표시/Human Review는 계속 동작합니다): {e}")
+        finally:
+            session.close()
 
     result_df = st.session_state.normalized_df
     if result_df is not None:
@@ -271,9 +322,10 @@ def page_normalization():
 def page_human_review():
     st.title("Human Review")
     st.caption(
-        "자동으로 확정되지 않은 항목을 사람이 직접 확인합니다. 여기서 내린 판단은 지금은 "
-        "이 화면(세션)에만 반영되고 PostgreSQL에는 저장되지 않습니다 — human_reviews 테이블에 "
-        "저장하는 기능은 Phase 6에서 추가할 계획입니다."
+        "자동으로 확정되지 않은 항목을 사람이 직접 확인합니다. '정규화 실행'을 거친 결과라면 "
+        "여기서 내린 판단이 PostgreSQL의 normalization_results/human_reviews/feedback_labels에 "
+        "저장됩니다. (정규화를 다시 실행하지 않고 이 세션에서 직접 만든 결과라면 저장할 "
+        "run_id가 없어 화면에만 반영됩니다.)"
     )
 
     result_df = st.session_state.normalized_df
@@ -333,10 +385,57 @@ def page_human_review():
             if st.button("적용", key=f"review_apply_{i}"):
                 match_columns = {col: row[col] for col in key_cols}
                 action = REVIEW_ACTIONS[action_label]
+
+                model_prediction = row.get("canonical_institution")
+                if action == "APPROVE":
+                    new_canonical, new_institution_id = model_prediction, row.get("institution_id")
+                    user_decision = model_prediction
+                elif action == "CHANGE_INSTITUTION":
+                    new_institution_id, new_canonical = override_institution
+                    user_decision = new_canonical
+                elif action == "NOT_FINANCIAL_INSTITUTION":
+                    new_canonical, new_institution_id = None, None
+                    user_decision = "NOT_FINANCIAL_INSTITUTION"
+                else:  # HOLD
+                    new_canonical, new_institution_id = model_prediction, row.get("institution_id")
+                    user_decision = "HOLD"
+
                 st.session_state.normalized_df = apply_human_decision(
                     st.session_state.normalized_df, match_columns, action, override_institution
                 )
-                st.success("반영했습니다. (아직 PostgreSQL에는 저장되지 않음)")
+
+                run_id = st.session_state.current_run_id
+                if run_id is None:
+                    st.success("반영했습니다. (이번 실행은 PostgreSQL에 저장되지 않아 화면 세션에만 반영됨)")
+                else:
+                    session = get_session()
+                    try:
+                        result_ids = find_result_ids(
+                            session, run_id, row["detected_expression"], row.get("context_text") if has_context else None
+                        )
+                        new_review_status = "AUTO" if action in ("APPROVE", "CHANGE_INSTITUTION") else action
+                        apply_review_to_results(
+                            session, result_ids, new_review_status, new_canonical, new_institution_id,
+                            normalization_method="HUMAN",
+                        )
+                        review_id = None
+                        for result_id in result_ids:
+                            review = add_human_review(session, result_id, model_prediction, user_decision, action)
+                            review_id = review.review_id
+                        if review_id is not None:
+                            add_feedback_label(
+                                session,
+                                original_expression=row["detected_expression"],
+                                context_text=row.get("context_text") if has_context else None,
+                                model_prediction=model_prediction,
+                                confirmed_label=user_decision,
+                                source_review_id=review_id,
+                            )
+                        st.success(f"반영했습니다. (PostgreSQL human_reviews/feedback_labels에 저장, {len(result_ids)}건)")
+                    except Exception as e:
+                        st.warning(f"화면에는 반영했지만 PostgreSQL 저장에는 실패했습니다: {e}")
+                    finally:
+                        session.close()
 
 
 def _show_db_connection_banner() -> bool:
@@ -496,12 +595,73 @@ def page_database_status():
         col1, col2 = st.columns(2)
         col1.metric("등록된 금융기관 수", counts["institution_count"])
         col2.metric("등록된 별칭 수", counts["alias_count"])
-        st.caption(
-            "Processing Run / Human Review / Feedback Label 수는 해당 기능이 구현되는 "
-            "Phase 3 이후부터 표시됩니다."
-        )
+
+        runs = list_processing_runs(session, limit=1000)
+        col3, col4, col5 = st.columns(3)
+        col3.metric("Processing Run 수", len(runs))
+        col4.metric("Human Review 수", count_human_reviews(session))
+        col5.metric("Feedback Label 수", count_feedback_labels(session))
+
+        if runs:
+            st.subheader("최근 실행 이력 (최대 20개)")
+            st.dataframe(
+                [
+                    {
+                        "run_id": r.run_id,
+                        "file_name": r.file_name,
+                        "file_type": r.file_type,
+                        "total_rows": r.total_rows,
+                        "status": r.status,
+                        "processing_seconds": float(r.processing_seconds) if r.processing_seconds else None,
+                        "created_at": r.created_at,
+                    }
+                    for r in runs[:20]
+                ],
+                use_container_width=True,
+            )
     finally:
         session.close()
+
+
+def page_feedback():
+    st.title("Feedback")
+    st.caption(
+        "Human Review에서 사용자가 확정한 라벨을 모아둔 목록입니다. 향후 모델 개선(재학습/평가)에 "
+        "사용할 수 있는 데이터를 쌓아두는 것이 목적이며, 지금 버전에서 이 데이터로 모델을 자동으로 "
+        "다시 학습시키는 기능은 없습니다 (계획서에서도 이 범위까지만 요구함)."
+    )
+    if not _show_db_connection_banner():
+        return
+
+    session = get_session()
+    try:
+        from sqlalchemy import select
+
+        from src.database.models import FeedbackLabel
+
+        labels = list(session.scalars(select(FeedbackLabel).order_by(FeedbackLabel.created_at.desc()).limit(200)))
+    finally:
+        session.close()
+
+    st.write(f"누적된 Feedback Label: {len(labels)}건 (최대 200건 표시)")
+    if labels:
+        st.dataframe(
+            [
+                {
+                    "label_id": l.label_id,
+                    "original_expression": l.original_expression,
+                    "context_text": l.context_text,
+                    "model_prediction": l.model_prediction,
+                    "confirmed_label": l.confirmed_label,
+                    "source_review_id": l.source_review_id,
+                    "created_at": l.created_at,
+                }
+                for l in labels
+            ],
+            use_container_width=True,
+        )
+    else:
+        st.info("아직 쌓인 Feedback Label이 없습니다. Human Review에서 판단을 반영하면 여기에 쌓입니다.")
 
 
 if page == "Dashboard":
@@ -514,6 +674,8 @@ elif page == "금융기관 정규화":
     page_normalization()
 elif page == "Human Review":
     page_human_review()
+elif page == "Feedback":
+    page_feedback()
 elif page == "금융기관 Master":
     page_institution_master()
 elif page == "Alias Master":
