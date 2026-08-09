@@ -6,7 +6,7 @@
 """
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from src.database.models import Base, InstitutionAlias, InstitutionMaster
 
@@ -45,6 +45,19 @@ def add_institution(
 
 def list_institutions(session: Session, active_only: bool = False) -> list[InstitutionMaster]:
     stmt = select(InstitutionMaster).order_by(InstitutionMaster.canonical_name)
+    if active_only:
+        stmt = stmt.where(InstitutionMaster.active.is_(True))
+    return list(session.scalars(stmt))
+
+
+def list_institutions_with_aliases(session: Session, active_only: bool = False) -> list[InstitutionMaster]:
+    """별칭(aliases)을 미리 로딩해서 반환한다. session을 닫은 뒤에도 alias 목록에 접근할 수 있다.
+
+    금융기관 정규화 매칭(Phase 3)에서 사용한다.
+    """
+    stmt = select(InstitutionMaster).options(selectinload(InstitutionMaster.aliases)).order_by(
+        InstitutionMaster.canonical_name
+    )
     if active_only:
         stmt = stmt.where(InstitutionMaster.active.is_(True))
     return list(session.scalars(stmt))

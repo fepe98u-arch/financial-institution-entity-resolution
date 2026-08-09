@@ -6,6 +6,7 @@ Phase 1 범위: 분개장 업로드, 샘플 데이터 생성, 컬럼 매핑, con
 
 from pathlib import Path
 
+import polars as pl
 import streamlit as st
 
 from src.column_mapper import (
@@ -15,7 +16,7 @@ from src.column_mapper import (
     build_context_text,
     validate_mapping,
 )
-from src.config_loader import load_settings
+from src.config_loader import get_fuzzy_auto_threshold, load_settings
 from src.data_loader import load_journal_file
 from src.database.connection import check_connection, get_engine, get_session
 from src.database.repository import (
@@ -25,10 +26,12 @@ from src.database.repository import (
     init_db,
     list_aliases,
     list_institutions,
+    list_institutions_with_aliases,
     seed_sample_master_data,
     set_alias_active,
     set_institution_active,
 )
+from src.normalization_pipeline import apply_normalization
 from src.synthetic_data_generator import generate_synthetic_journal
 
 INSTITUTION_TYPES = ["BANK", "SECURITIES", "INSURANCE", "OTHER"]
@@ -41,17 +44,19 @@ if "journal_df" not in st.session_state:
     st.session_state.journal_df = None
 if "column_mapping" not in st.session_state:
     st.session_state.column_mapping = {}
+if "normalized_df" not in st.session_state:
+    st.session_state.normalized_df = None
 
 PAGES_IMPLEMENTED = [
     "Dashboard",
     "분개장 업로드",
     "컬럼 Mapping",
+    "금융기관 정규화",
     "금융기관 Master",
     "Alias Master",
     "Database 상태",
 ]
 PAGES_PLANNED = [
-    "금융기관 정규화 (Phase 3~5)",
     "AI 결과 (Phase 4~5)",
     "Human Review (Phase 5~6)",
     "회사 금융기관 목록 (Phase 7)",
@@ -65,7 +70,7 @@ PAGES_PLANNED = [
 st.sidebar.title(settings["app"]["title"])
 page = st.sidebar.radio("메뉴", PAGES_IMPLEMENTED + PAGES_PLANNED)
 st.sidebar.markdown("---")
-st.sidebar.caption("현재는 Phase 1~2만 구현되어 있습니다. 그 외 메뉴는 자리 표시일 뿐 동작하지 않습니다.")
+st.sidebar.caption("현재는 Phase 1~3만 구현되어 있습니다. 그 외 메뉴는 자리 표시일 뿐 동작하지 않습니다.")
 
 
 def page_dashboard():
@@ -78,10 +83,24 @@ def page_dashboard():
     col1, col2 = st.columns(2)
     col1.metric("총 분개 수", f"{df.height:,}")
     col2.metric("컬럼 수", df.width)
-    st.caption(
-        "금융기관 탐지 수, FAST PATH/AI PATH 처리 건수 등은 Phase 3 이후 구현됩니다. "
-        "지금은 실제로 계산되지 않으므로 표시하지 않습니다."
-    )
+
+    result_df = st.session_state.normalized_df
+    if result_df is None:
+        st.caption(
+            "'금융기관 정규화' 메뉴에서 정규화를 실행하면 FAST PATH 처리 건수가 여기에 표시됩니다. "
+            "AI PATH(Embedding) 관련 수치는 아직 구현되지 않아 표시하지 않습니다."
+        )
+        return
+
+    method_counts = result_df.group_by("normalization_method").len().sort("normalization_method")
+    st.subheader("정규화 결과 (FAST PATH만, 실제 계산값)")
+    st.dataframe(method_counts, use_container_width=True)
+    auto_count = result_df.filter(pl.col("review_status") == "AUTO").height
+    needs_review_count = result_df.filter(pl.col("review_status") == "NEEDS_REVIEW").height
+    col3, col4 = st.columns(2)
+    col3.metric("자동 정규화(AUTO)", f"{auto_count:,}")
+    col4.metric("검토 필요(NEEDS_REVIEW)", f"{needs_review_count:,}")
+    st.caption("Embedding/Context Reranking 처리 건수는 아직 없습니다 (Phase 4~5에서 구현).")
 
 
 def page_upload():
@@ -98,6 +117,7 @@ def page_upload():
             else:
                 st.session_state.journal_df = df
                 st.session_state.column_mapping = {}
+                st.session_state.normalized_df = None
                 st.success(f"{uploaded.name} 로드 완료 ({df.height:,}행 x {df.width}열)")
 
     with tab_sample:
@@ -113,6 +133,7 @@ def page_upload():
             df = generate_synthetic_journal(n_rows=int(n_rows))
             st.session_state.journal_df = df
             st.session_state.column_mapping = {}
+            st.session_state.normalized_df = None
             out_dir = Path("data/synthetic")
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / "sample_journal.csv"
@@ -162,6 +183,61 @@ def page_column_mapping():
                 result_df.select(preview_cols).head(settings["app"]["max_preview_rows"]),
                 use_container_width=True,
             )
+
+
+def page_normalization():
+    st.title("금융기관 정규화 (FAST PATH)")
+    st.caption(
+        "Exact Match → Alias Match → Fuzzy Match 순서로만 처리합니다 (Embedding/AI PATH는 아직 없음, Phase 4~5). "
+        "명확히 일치하지 않는 표현은 UNRESOLVED로 남습니다."
+    )
+
+    df = st.session_state.journal_df
+    mapping = st.session_state.column_mapping
+    if df is None or not mapping.get("vendor"):
+        st.info("먼저 '분개장 업로드'에서 데이터를 불러오고, '컬럼 Mapping'에서 거래처 컬럼을 지정하세요.")
+        return
+
+    if not _show_db_connection_banner():
+        return
+
+    vendor_column = mapping["vendor"]
+    threshold = get_fuzzy_auto_threshold()
+    st.caption(f"Fuzzy 자동 정규화 threshold: {threshold:.1f}점 (config/model_config.yaml에서 조정 가능)")
+
+    if st.button("정규화 실행"):
+        session = get_session()
+        try:
+            init_db(get_engine())
+            institutions = list_institutions_with_aliases(session, active_only=True)
+        finally:
+            session.close()
+
+        if not institutions:
+            st.warning("등록된 금융기관이 없습니다. '금융기관 Master' 메뉴에서 먼저 등록하세요.")
+            return
+
+        result_df = apply_normalization(df, vendor_column, institutions, threshold)
+        st.session_state.normalized_df = result_df
+        st.success(f"{result_df.height:,}행에 대해 FAST PATH 정규화를 완료했습니다.")
+
+    result_df = st.session_state.normalized_df
+    if result_df is not None:
+        st.subheader("결과 미리보기")
+        preview_cols = [
+            "detected_expression",
+            "canonical_institution",
+            "normalization_method",
+            "top1_score",
+            "top2_candidate",
+            "top2_score",
+            "review_status",
+            "reason",
+        ]
+        st.dataframe(
+            result_df.select(preview_cols).unique().head(settings["app"]["max_preview_rows"]),
+            use_container_width=True,
+        )
 
 
 def _show_db_connection_banner() -> bool:
@@ -335,6 +411,8 @@ elif page == "분개장 업로드":
     page_upload()
 elif page == "컬럼 Mapping":
     page_column_mapping()
+elif page == "금융기관 정규화":
+    page_normalization()
 elif page == "금융기관 Master":
     page_institution_master()
 elif page == "Alias Master":

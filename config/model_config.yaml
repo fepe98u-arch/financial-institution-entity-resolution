@@ -1,0 +1,4 @@
+# Phase 3: FAST PATH(정확 일치/별칭/유사도) 매칭 설정.
+# 이 threshold는 공식 감사기준이 아니라, 실제 검증 데이터로 조정해야 하는 값이다.
+fuzzy_matching:
+  auto_threshold: 90.0 # 이 점수(0~100) 이상이면 자동 정규화, 미만이면 검토 필요

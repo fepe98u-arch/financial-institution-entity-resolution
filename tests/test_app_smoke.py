@@ -61,3 +61,29 @@ def test_db_pages_load_without_crashing(page_name):
     if not _DB_CONNECTED:
         messages = [w.value for w in at.warning] + [e.value for e in at.error]
         assert any("PostgreSQL" in m or "Not Connected" in m or "연결" in m for m in messages)
+
+
+@pytest.mark.skipif(not _DB_CONNECTED, reason="PostgreSQL 연결 없이는 정규화 화면을 끝까지 테스트할 수 없어 건너뜁니다.")
+def test_normalization_end_to_end_via_ui():
+    """마스터 시딩 -> 샘플 생성 -> 컬럼 매핑 -> 정규화 실행까지 화면 흐름 전체를 확인한다."""
+    at = AppTest.from_file("app.py")
+    at.run(timeout=APP_TIMEOUT)
+
+    at.sidebar.radio[0].set_value("금융기관 Master").run(timeout=APP_TIMEOUT)
+    at.button[0].click().run(timeout=APP_TIMEOUT)  # 샘플 마스터 데이터 추가 (이미 있으면 건너뜀)
+
+    at.sidebar.radio[0].set_value("분개장 업로드").run(timeout=APP_TIMEOUT)
+    at.button[0].click().run(timeout=APP_TIMEOUT)  # 샘플 분개 생성
+
+    at.sidebar.radio[0].set_value("컬럼 Mapping").run(timeout=APP_TIMEOUT)
+    at.selectbox[2].set_value("거래처").run(timeout=APP_TIMEOUT)
+    at.selectbox[3].set_value("적요").run(timeout=APP_TIMEOUT)
+    at.selectbox[4].set_value("계정과목").run(timeout=APP_TIMEOUT)
+    at.selectbox[5].set_value("상대계정").run(timeout=APP_TIMEOUT)
+    at.button[0].click().run(timeout=APP_TIMEOUT)
+
+    at.sidebar.radio[0].set_value("금융기관 정규화").run(timeout=APP_TIMEOUT)
+    at.button[0].click().run(timeout=APP_TIMEOUT)  # 정규화 실행
+
+    assert not at.exception
+    assert any("FAST PATH 정규화를 완료" in s.value for s in at.success)

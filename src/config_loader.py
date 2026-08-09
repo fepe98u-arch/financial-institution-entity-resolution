@@ -14,6 +14,17 @@ def load_settings() -> dict:
         return yaml.safe_load(f)
 
 
+def get_fuzzy_auto_threshold() -> float:
+    return float(load_model_config()["fuzzy_matching"]["auto_threshold"])
+
+
+def load_model_config() -> dict:
+    """FAST PATH/AI PATH 매칭 threshold 등 모델 관련 설정을 읽는다. (Phase 3부터 사용)"""
+    config_path = BASE_DIR / "config" / "model_config.yaml"
+    with open(config_path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
 def get_database_url() -> str | None:
     """PostgreSQL 접속 정보는 .env의 DATABASE_URL에서만 읽는다. (Phase 2부터 사용)"""
     return os.getenv("DATABASE_URL")

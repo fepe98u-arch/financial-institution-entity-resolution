@@ -26,36 +26,44 @@ Context-Aware Financial Institution Entity Resolution
 확정"하지 않습니다. 최종 판단은 항상 감사인이 합니다. 이 프로그램은 "빠뜨리기
 쉬운 후보를 찾아 보여주는" 보조 도구입니다.
 
-## 지금 실제로 되는 것 / 안 되는 것 (Phase 2 기준)
+## 지금 실제로 되는 것 / 안 되는 것 (Phase 3 기준)
 
 **실제로 구현되어 동작하는 기능**
 - 분개장 CSV/Excel 파일 업로드 (Polars로 읽음)
 - 실제 데이터가 없을 때 테스트해 볼 수 있는 가상 샘플 데이터 생성
 - 회사마다 다른 컬럼명(거래처/적요/계정과목/상대계정 등)을 화면에서 직접
-  선택해서 매핑
-- 매핑한 컬럼들을 합쳐 문맥 텍스트(context_text)를 만드는 기능
-- PostgreSQL 연결 코드와 테이블 스키마 (SQLAlchemy). **단, 이 컴퓨터에는
-  아직 PostgreSQL이 설치되어 있지 않아 실제 연결 테스트는 하지 못했습니다.**
-  자동 설치는 하지 않습니다 (아래 "PostgreSQL 연결 방법" 참고).
-- 금융기관 Master / Alias Master 화면 (등록·조회·활성/비활성 전환) — DB가
-  연결되어 있어야 동작하며, 연결이 안 되어 있으면 화면에 "PostgreSQL 연결이
-  필요합니다"라고 표시됩니다 (이 부분은 확인함).
-- Database 상태 화면 (연결 여부, 등록된 기관/별칭 수 표시, 비밀번호는 절대
-  표시하지 않음)
-- pytest 자동 테스트 19개 (아래 "테스트 실행 결과" 참고)
+  선택해서 매핑, 매핑한 컬럼들을 합친 문맥 텍스트(context_text) 생성
+- **PostgreSQL이 이 컴퓨터에 실제로 설치되어 연결되어 있습니다** (winget으로
+  무인 설치, 아래 "PostgreSQL 연결 방법"에 설치 과정을 그대로 기록함).
+  금융기관 Master / Alias Master / Database 상태 화면이 실제 DB로 동작함을
+  확인했습니다.
+- **FAST PATH 금융기관 정규화** (Exact Match → Alias Match → Fuzzy Match,
+  이 순서로만 시도): 등록된 표준명/별칭과 완전히 같으면 즉시 확정하고,
+  그렇지 않으면 rapidfuzz로 유사도를 계산해 90점(기본값) 이상일 때만 자동
+  확정합니다. AI(Embedding)는 아직 없습니다.
+  - 300,000행을 한 줄씩 반복하지 않습니다. 거래처 표현의 **고유값만** 매칭한
+    뒤 Polars join으로 전체 행에 결과를 broadcast합니다.
+  - "OO농협", "농협유통", "NH투자"처럼 자동 확정하면 안 되는 사례들이 실제로
+    90점 미만(45~60점)이 나와 UNRESOLVED로 남는 것을 테스트로 확인했습니다.
+- Dashboard에 정규화 방법별 건수(EXACT/ALIAS/FUZZY/UNRESOLVED), 자동
+  확정/검토 필요 건수를 실제 계산값으로 표시
+- pytest 자동 테스트 34개 (아래 "테스트 실행 결과" 참고)
 
-**아직 구현되지 않은 기능, 또는 만들었지만 실제 DB로 검증하지 못한 기능**
-(계획서의 Phase 3 이후 + 이번 Phase 2에서 DB 미보유로 미검증된 부분)
-- institution_master/institution_alias CRUD 코드에 대한 실제 PostgreSQL
-  연결 테스트 (DB가 없어 코드만 작성, 3개 테스트는 skip 처리됨)
-- 정확 일치/별칭/유사도(rapidfuzz) 매칭
-- Embedding 기반 AI 추천, 문맥 재평가(Context Reranking)
+**아직 구현되지 않은 기능**
+- Embedding 기반 AI 추천 (사전에 없는 표현, 예: 오타 "농협은헹"은 지금
+  90점 미만이라 UNRESOLVED로 남고 사람이 봐야 함 — 이건 Phase 4~5에서
+  Embedding/문맥 재평가로 보완할 부분입니다)
+- 문맥 재평가(Context Reranking), 즉 적요/계정과목 등을 보고 후보를 다시
+  평가하는 기능 — 지금 FAST PATH는 거래처 이름만 보고 판단합니다
 - Human Review 화면과 저장, Feedback 축적
 - 회사 제출 금융기관 목록과의 완전성 비교
+- normalization_results 등 분석결과를 PostgreSQL에 저장하는 기능 (지금은
+  화면에서만 보여주고 DB에 저장하지 않음 — Human Review가 필요해지는
+  Phase 5~6에서 저장하도록 만들 계획)
 - 대용량(10만/30만 건) 성능 테스트, Excel 결과 다운로드
 - 모델 성능(Accuracy/Precision/Recall 등) 평가
 
-이 문서 뒤쪽의 "다음 단계"에 Phase 3부터의 계획이 있습니다.
+이 문서 뒤쪽의 "다음 단계"에 Phase 4부터의 계획이 있습니다.
 
 ## 왜 이런 기술을 쓰는가 (비개발자용 설명)
 
@@ -72,16 +80,20 @@ Context-Aware Financial Institution Entity Resolution
   때, 의미가 비슷한 표준 금융기관 이름을 찾아주는 데 씁니다. 외부 인터넷
   API가 아니라 내 컴퓨터에서 도는 모델을 씁니다. 즉 분개 데이터가 외부
   서버로 전송되지 않습니다.
+- **rapidfuzz** (Phase 3부터): 오타나 지점명이 붙은 표현("농협은행
+  부산지점")처럼, 완전히 같지는 않지만 비슷한 문자열을 찾는 데 씁니다.
+  AI 모델 없이 문자열 유사도만 계산하므로 빠릅니다.
 
 ## 왜 모든 행에 AI를 돌리지 않는가
 
 "NH농협은행"처럼 누가 봐도 명확한 표현이 3만 번 반복된다고 해서, 3만 번 AI
 모델을 부르는 것은 느리고 낭비입니다. 그래서:
 
-1. 먼저 정확히 일치하는지, 미리 등록된 별칭 목록에 있는지 빠르게 확인합니다
-   (FAST PATH). 이건 계획서의 Phase 3에서 구현됩니다.
-2. 사전에 없는 표현, 애매한 표현만 AI(Embedding)로 넘깁니다 (AI PATH,
-   Phase 4~5에서 구현).
+1. 먼저 정확히 일치하는지, 미리 등록된 별칭 목록에 있는지, 유사도가 아주
+   높은지를 빠르게 확인합니다 (FAST PATH: Exact → Alias → Fuzzy, Phase 3에서
+   구현 완료). 이 세 가지는 AI 모델을 부르지 않습니다.
+2. 이 세 가지로도 확정하지 못한 표현만 AI(Embedding)로 넘깁니다 (AI PATH,
+   Phase 4~5에서 구현 예정, 아직 없음).
 3. 같은 표현을 이미 처리했다면 결과를 재사용(Cache)합니다. 단, "농협"처럼
    문맥에 따라 뜻이 달라질 수 있는 표현은 문맥까지 같아야 같은 결과를
    재사용합니다.
@@ -89,16 +101,20 @@ Context-Aware Financial Institution Entity Resolution
 ## 폴더 구조
 
 ```
-app.py                     Streamlit 화면 진입점
-config/settings.yaml       화면 기본값 설정 (샘플 행 수, 미리보기 행 수 등)
-data/synthetic/            가상 샘플 데이터 (실제 고객 데이터 절대 넣지 않음)
-data/cache/                대용량 파일 캐시용 (Phase 8부터 사용, 아직 비어 있음)
-outputs/                   분석 결과 내보내기 (Phase 8부터 사용)
-src/                       실제 처리 로직 (데이터 읽기, 컬럼 매핑 등)
-src/database/connection.py PostgreSQL 연결 (DATABASE_URL만 사용, 코드에 비밀번호 없음)
-src/database/models.py     테이블 정의 (SQLAlchemy)
-src/database/repository.py 금융기관 Master/Alias CRUD 함수
-tests/                     pytest 자동 테스트
+app.py                          Streamlit 화면 진입점
+config/settings.yaml            화면 기본값 설정 (샘플 행 수, 미리보기 행 수 등)
+config/model_config.yaml        Fuzzy 매칭 threshold 등 (Phase 3부터)
+data/synthetic/                 가상 샘플 데이터 (실제 고객 데이터 절대 넣지 않음)
+data/cache/                     대용량 파일 캐시용 (Phase 8부터 사용, 아직 비어 있음)
+outputs/                        분석 결과 내보내기 (Phase 8부터 사용)
+src/                            실제 처리 로직 (데이터 읽기, 컬럼 매핑 등)
+src/database/connection.py      PostgreSQL 연결 (DATABASE_URL만 사용, 코드에 비밀번호 없음)
+src/database/models.py          테이블 정의 (SQLAlchemy)
+src/database/repository.py      금융기관 Master/Alias CRUD 함수
+src/alias_matcher.py            Exact/Alias 매칭 (Phase 3)
+src/fuzzy_matcher.py            rapidfuzz 유사도 매칭 (Phase 3)
+src/normalization_pipeline.py   FAST PATH 파이프라인, Polars broadcast (Phase 3)
+tests/                          pytest 자동 테스트
 ```
 
 ## 실행 방법
@@ -120,9 +136,12 @@ tests/                     pytest 자동 테스트
 3. 브라우저가 자동으로 열리며 `http://localhost:8501` 에서 화면을 볼 수
    있습니다.
 
-4. 사이드바에서 "분개장 업로드" → 파일을 올리거나 "샘플 데이터 생성" 버튼
-   클릭 → "컬럼 Mapping"에서 거래처 등 컬럼 선택 → "context_text 생성"
-   버튼을 누르면 결과를 미리 볼 수 있습니다.
+4. 사이드바에서 순서대로 진행합니다:
+   1. "금융기관 Master" → "샘플 마스터 데이터 추가" 버튼 (처음 한 번만)
+   2. "분개장 업로드" → 파일을 올리거나 "샘플 데이터 생성" 버튼
+   3. "컬럼 Mapping" → 거래처 등 컬럼 선택 → "context_text 생성"
+   4. "금융기관 정규화" → "정규화 실행" 버튼 → 결과 미리보기
+   5. "Dashboard" → 방법별 처리 건수 확인
 
 ## 테스트 실행 방법 / 결과
 
@@ -130,58 +149,63 @@ tests/                     pytest 자동 테스트
 .venv\Scripts\pytest -v
 ```
 
-**실제로 실행한 결과 (2026-08-09 기준)**: 19개 중 16개 통과, 3개는 건너뜀(skip)
-(`16 passed, 3 skipped`).
+**실제로 실행한 결과 (2026-08-09 기준)**: 34개 전부 통과 (`34 passed`).
 
-- 통과한 16개: 가상 데이터 생성기, 컬럼 매핑/context_text 생성, CSV 파일
-  읽기, 화면 흐름(업로드→매핑→미리보기) 시뮬레이션, 그리고 금융기관
-  Master/Alias Master/Database 상태 화면이 **PostgreSQL 미연결 상태에서
-  에러 없이 안내 메시지를 보여주는지**까지 확인.
-- 건너뛴 3개: 실제 PostgreSQL에 기관/별칭을 추가하고 조회하는 테스트.
-  이 컴퓨터에 PostgreSQL이 없어서 "실패"가 아니라 "건너뜀"으로
-  처리됐습니다 — 즉 **이 3개는 아직 한 번도 실행되어 성공한 적이 없습니다.**
-  PostgreSQL을 연결한 뒤 다시 `pytest`를 돌리면 이 3개도 같이 실행됩니다.
+- DB 연결 3개 테스트(institution/alias 추가·조회) 포함, 마스터 데이터
+  시딩, FAST PATH 매칭(Exact/Alias/Fuzzy), 화면 흐름 전체(마스터 시딩 →
+  샘플 생성 → 컬럼 매핑 → 정규화 실행)까지 실제 PostgreSQL에 연결한 상태로
+  확인했습니다.
+- "OO농협", "농협유통", "NH투자"가 FAST PATH만으로는 자동 확정되지 않는지,
+  실제 rapidfuzz 점수(45~60점, threshold 90점 미만)로 검증했습니다.
+- 짧은 한글 단어의 한 글자 오타(예: "농협은헹")는 실제로 75점 정도가 나와
+  threshold(90점)를 넘지 못하고 검토 필요 상태로 남는다는 것도 실제 점수로
+  확인했습니다 — 이 값은 임의로 만든 것이 아니라 rapidfuzz의 실제 계산값입니다.
 
-아직 별칭 매칭, 유사도 매칭, Embedding 관련 테스트는 해당 기능이 구현되지
-않아 존재하지 않습니다. 30만 행 대용량 테스트도 아직 실행하지 않았습니다
-(Phase 8에서 진행).
+아직 Embedding, Context Reranking, Human Review, 완전성 비교 관련 테스트는
+해당 기능이 구현되지 않아 존재하지 않습니다. 30만 행 대용량 테스트도 아직
+실행하지 않았습니다 (Phase 8에서 진행).
 
 ## PostgreSQL 연결 방법
 
-**현재 이 컴퓨터에는 PostgreSQL이 설치되어 있지 않습니다** (직접 확인함:
-`psql` 명령, Windows 서비스, `C:\Program Files\PostgreSQL`, Docker 모두
-없음). 프로그램이 자동으로 설치하지 않으므로, 금융기관 Master/Alias
-Master/Database 상태 화면을 실제로 써보려면 아래를 **직접** 진행해야
-합니다.
+**PostgreSQL 17이 이 컴퓨터에 설치되어 실행 중입니다.** 처음에는 설치되어
+있지 않아서(직접 확인: `psql` 명령, Windows 서비스, `C:\Program
+Files\PostgreSQL`, Docker 전부 없었음), winget으로 설치를 진행했습니다
+(사용자가 명시적으로 "자동 설치해줘"라고 요청해서 진행한 것이며, 기본적으로
+이 프로그램은 PostgreSQL을 자동으로 설치하지 않습니다).
 
-1. **PostgreSQL 설치** — https://www.postgresql.org/download/windows/ 에서
-   설치 프로그램을 받아 설치합니다. 설치 중 물어보는 관리자(superuser)
-   비밀번호를 기억해 두세요.
-2. **데이터베이스 생성** — 설치 시 같이 설치되는 "SQL Shell (psql)"을 열고:
+실제로 진행한 절차:
+1. `winget install PostgreSQL.PostgreSQL.17` (무인 설치 모드)로 서버 설치
+2. `postgresql-x64-17` 서비스가 실행 중인지 확인 (`sc query`)
+3. `psql`로 데이터베이스(`financial_entity_resolution`)와 앱 전용 계정
+   (`app_user`) 생성 — 관리자(superuser) 계정과 앱 계정 비밀번호는 각각
+   무작위로 생성해서 화면에 노출하지 않았습니다
+4. `.env`에 `DATABASE_URL` 설정 (실제 비밀번호가 들어있으므로 `.env`는
+   git에 올라가지 않습니다 — `.gitignore` 확인)
+5. `check_connection()`으로 `Connected` 확인, pytest로 실제 CRUD 테스트
+
+**다른 컴퓨터에서 이 프로젝트를 새로 실행할 때** PostgreSQL이 없다면 아래를
+직접 진행해야 합니다 (자동 설치를 원치 않으면 이 절차를 그대로 따르세요):
+
+1. https://www.postgresql.org/download/windows/ 에서 설치 프로그램을 받아
+   설치합니다.
+2. SQL Shell(psql)에서 데이터베이스 생성:
    ```sql
    CREATE DATABASE financial_entity_resolution;
    ```
-3. **사용자 계정 생성** (관리자 계정을 그대로 써도 되지만, 별도 계정을
-   권장합니다):
+3. 앱 전용 계정 생성:
    ```sql
    CREATE USER app_user WITH PASSWORD '원하는_비밀번호';
    GRANT ALL PRIVILEGES ON DATABASE financial_entity_resolution TO app_user;
    ```
-4. **`.env` 파일에 `DATABASE_URL` 설정** — 프로젝트 폴더에 `.env` 파일을
-   만들고 (`.env.example`을 복사) 아래처럼 채웁니다:
+4. `.env` 파일(`.env.example`을 복사)에 `DATABASE_URL` 설정:
    ```
    DATABASE_URL=postgresql+psycopg://app_user:원하는_비밀번호@localhost:5432/financial_entity_resolution
    ```
-5. **연결 테스트** — Streamlit 앱을 실행한 뒤 사이드바에서 "Database 상태"
-   메뉴를 열면 "Connected" 또는 "Not Connected"가 표시됩니다. 또는 터미널에서:
-   ```
-   .venv\Scripts\pytest tests/test_database.py -v
-   ```
-   PostgreSQL이 연결되면 이 3개 테스트가 skip 대신 실제로 실행됩니다.
+5. Streamlit의 "Database 상태" 메뉴 또는 `pytest tests/test_database.py -v`로
+   연결 확인.
 
-프로그램은 PostgreSQL을 자동으로 설치하거나 서버 설정을 바꾸지 않습니다.
 연결에 실패하면 화면과 테스트 모두 "PostgreSQL 연결이 필요합니다"라고
-명확히 표시합니다 (자동으로 다른 DB로 대체하지 않습니다).
+표시합니다 (자동으로 다른 DB로 대체하지 않습니다).
 
 ## 기본 SQL 예제
 
@@ -203,8 +227,10 @@ FROM institution_alias
 WHERE institution_id = :institution_id;
 ```
 
-아래 두 쿼리는 Phase 3 이후 `normalization_results`/`human_reviews`에
-실제 데이터가 쌓이면 쓸 수 있는 예시입니다 (지금은 테이블만 있고 비어 있음):
+아래 두 쿼리는 `normalization_results`/`human_reviews`에 실제 데이터가
+쌓이면 쓸 수 있는 예시입니다 (Phase 3의 정규화 결과는 아직 이 테이블에
+저장하지 않고 화면에서만 보여주므로, 지금은 테이블이 비어 있습니다 —
+저장 기능은 Phase 5~6에서 추가할 계획입니다):
 
 ```sql
 -- 수동 검토가 필요한 건 조회
@@ -225,12 +251,12 @@ SELECT * FROM human_reviews WHERE review_action = 'CHANGE_INSTITUTION';
 - 외부 LLM API(OpenAI, Claude API 등)를 호출하지 않습니다. AI 기능은 모두
   내 컴퓨터에서 실행되는 모델을 사용할 계획입니다.
 
-## 다음 단계 (계획서 기준 Phase 3~9)
+## 다음 단계 (계획서 기준 Phase 4~9)
 
-- ~~Phase 2: PostgreSQL 연결, 금융기관 Master/별칭 테이블~~ (완료. 단, 실제
-  PostgreSQL로 CRUD 테스트하는 것은 이 컴퓨터에 PostgreSQL을 설치한 뒤로
-  남아있음)
-- Phase 3: 정확 일치, 별칭 매칭, 유사도(rapidfuzz) 매칭
+- ~~Phase 2: PostgreSQL 연결, 금융기관 Master/별칭 테이블~~ (완료, 실제
+  PostgreSQL로 CRUD 테스트까지 확인함)
+- ~~Phase 3: 정확 일치, 별칭 매칭, 유사도(rapidfuzz) 매칭~~ (완료. Embedding
+  없이 문자열 기반으로만 처리하며, 확정 못한 표현은 UNRESOLVED로 남김)
 - Phase 4: Embedding 모델, 후보 검색, 결과 캐시
 - Phase 5: 문맥 기반 재평가, 신뢰도 계산, Human Review 화면
 - Phase 6: Human Review 결과 저장, Feedback 데이터 축적

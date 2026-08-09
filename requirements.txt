@@ -1,5 +1,5 @@
-# Phase 1 + Phase 2 dependencies.
-# Later phases will add: rapidfuzz, sentence-transformers, scikit-learn — added when each phase actually needs them.
+# Phase 1 + Phase 2 + Phase 3 dependencies.
+# Later phases will add: sentence-transformers, scikit-learn — added when each phase actually needs them.
 
 streamlit==1.38.0
 polars==1.9.0
@@ -11,3 +11,6 @@ pytest==9.1.1
 # Phase 2: PostgreSQL 연결
 SQLAlchemy==2.0.35
 psycopg[binary]==3.2.3
+
+# Phase 3: 유사도(fuzzy) 매칭
+rapidfuzz==3.9.7
