@@ -26,7 +26,7 @@ Context-Aware Financial Institution Entity Resolution
 확정"하지 않습니다. 최종 판단은 항상 감사인이 합니다. 이 프로그램은 "빠뜨리기
 쉬운 후보를 찾아 보여주는" 보조 도구입니다.
 
-## 지금 실제로 되는 것 / 안 되는 것 (Phase 8 기준)
+## 지금 실제로 되는 것 / 안 되는 것 (Phase 9 · 최종 기준)
 
 **실제로 구현되어 동작하는 기능**
 - 분개장 CSV/Excel 파일 업로드, 컬럼 매핑, context_text 생성 (Phase 1)
@@ -121,7 +121,16 @@ Context-Aware Financial Institution Entity Resolution
   Matched_Both/Company_Only), "모델 성능"(Model_Performance) 화면에 각각
   다운로드 버튼이 있습니다. `xlsxwriter`를 통한 Polars `write_excel()`을
   사용하며, 원본 파일은 건드리지 않고 새 파일만 만듭니다.
-- pytest 자동 테스트 79개 (아래 "테스트 실행 결과" 참고)
+- **pytest 보강** (Phase 9): 계획서 42번 섹션의 체크리스트를 다시 훑어보고
+  빠진 부분을 추가했습니다.
+  - 동일 표현을 1,000번 반복해도 Embedding이 실제로 1번만 호출되는지
+    monkeypatch로 직접 증명 (`test_duplicate_unresolved_rows_are_embedded_only_once`)
+  - 10,000 / 100,000행은 기본 테스트에 포함 (항상 빠름), 300,000행은
+    `RUN_SLOW_TESTS=1` 환경변수를 줘야 실행되는 별도 테스트로 분리 (기본
+    실행 시간을 늘리지 않기 위함)
+  - 모든 정규화 결과에 reason이 반드시 채워지는지, 원본 DataFrame이
+    정규화/문맥생성 과정에서 절대 바뀌지 않는지 직접 검증
+- pytest 자동 테스트 86개 (아래 "테스트 실행 결과" 참고)
 
 **아직 구현되지 않은 기능**
 - Cross-Encoder 재순위화 — Context Reranking은 실제 Cross-Encoder가 아니라
@@ -246,7 +255,14 @@ tests/                          pytest 자동 테스트
 .venv\Scripts\pytest -v
 ```
 
-**실제로 실행한 결과 (2026-08-09 기준)**: 79개 전부 통과 (`79 passed`).
+**실제로 실행한 결과 (2026-08-10 기준)**: 기본 실행은 85개 통과 + 1개
+건너뜀(`85 passed, 1 skipped`) — 건너뛴 1개는 300,000행 전체 파이프라인
+테스트로, 시간이 오래 걸려 기본 실행에서는 제외했습니다. 아래처럼 명시적으로
+켜면 그 테스트도 포함해 86개 전부 통과합니다:
+
+```
+RUN_SLOW_TESTS=1 pytest -v
+```
 
 - DB 연결, FAST PATH, Embedding, Context Reranking, Human Review,
   PostgreSQL 저장, 완전성 비교, **모델 성능 평가, 처리 성능(대용량) 측정,
@@ -270,6 +286,9 @@ tests/                          pytest 자동 테스트
   (`test_processing_performance_measures_real_timing_via_ui`).
 - Excel 다운로드가 실제로 유효한 xlsx 파일(zip 시그니처 `PK`로 시작)을
   만드는지 확인.
+- **동일 표현을 1,000번 반복해도 Embedding은 1번만 호출되는지 직접 증명**
+  (`test_duplicate_unresolved_rows_are_embedded_only_once`, monkeypatch로
+  실제 호출 인자 개수를 가로채서 확인 — 시간 추정이 아니라 직접 증명).
 - Streamlit AppTest로 화면을 실제로 구동해서 저장까지 확인했고, 테스트가
   만든 데이터는 테스트 종료 시 직접 지웁니다 (`_cleanup_run`) — 실행 후
   실제로 `SELECT count(*)`로 DB가 깨끗해지는 것도 확인했습니다.
@@ -382,7 +401,7 @@ ORDER BY created_at DESC;
 - 외부 LLM API(OpenAI, Claude API 등)를 호출하지 않습니다. AI 기능은 모두
   내 컴퓨터에서 실행되는 모델을 사용할 계획입니다.
 
-## 다음 단계 (계획서 기준 Phase 9)
+## 진행 현황 (계획서 기준 Phase 2~9)
 
 - ~~Phase 2: PostgreSQL 연결, 금융기관 Master/별칭 테이블~~ (완료)
 - ~~Phase 3: 정확 일치, 별칭 매칭, 유사도(rapidfuzz) 매칭~~ (완료)
@@ -393,7 +412,119 @@ ORDER BY created_at DESC;
 - ~~Phase 8: 성능 평가, 대용량(30만 건) 테스트, Excel 결과 다운로드~~ (완료.
   이 과정에서 실제로 두 번째 false-positive 버그를 발견/수정함 — 위
   "지금 실제로 되는 것" 참고)
-- Phase 9: pytest 보강, README 최종화
+- ~~Phase 9: pytest 보강, README 최종화~~ (완료 — 이 문서)
 
-각 Phase가 끝나면 실제로 무엇이 되고 무엇이 안 되는지 이 README와 함께
-보고합니다.
+계획서에 있던 Phase 2~9가 모두 한 차례씩 구현되었습니다. 다만 "완료"는
+"계획서가 요구한 범위를 구현하고 실제로 동작을 확인했다"는 뜻이며,
+"완벽하다"는 뜻은 아닙니다 — 바로 아래 "최종 보고"에 한계와 다음 개선
+우선순위를 숨김없이 적었습니다.
+
+## 최종 보고 (프로젝트 요약, 2026-08-10 기준)
+
+**1. 실제 구현 기능**
+분개장 업로드(CSV/Excel) → 컬럼 매핑/context_text 생성 → 금융기관
+정규화(FAST PATH: Exact/Alias/Fuzzy → AI PATH: Embedding → Context
+Reranking) → Human Review(승인/변경/거부/보류) → PostgreSQL 저장
+(processing_runs/normalization_results/human_reviews/feedback_labels) →
+회사 제출 목록 업로드 및 완전성 비교(A/B/추가 검토 후보) → 완전성 비교
+결과 저장(completeness_results) → 모델 성능 평가(Baseline1~Model4) →
+대용량 처리 성능 측정 및 로그 저장(performance_logs) → Excel 다운로드.
+
+**2. 미구현 기능**
+`candidate_scores`(Embedding Top-K 후보 전체 저장), Feedback Label을 이용한
+실제 모델 재학습/Active Learning, 30만 건을 PostgreSQL에 저장하는 성능
+측정, Cross-Encoder(실제로는 키워드 규칙 Fallback을 사용).
+
+**3. Polars를 실제 사용한 위치**
+`src/data_loader.py`(CSV/Excel 읽기), `src/column_mapper.py`(context_text
+생성, vectorized), `src/normalization_pipeline.py`(고유값 dedup 후 join으로
+전체 행에 broadcast — 300,000행에서도 반복문 없음), `src/completeness_checker.py`,
+`src/evaluation.py`, `src/export_service.py`(Excel 변환).
+
+**4. PostgreSQL을 실제 사용한 위치**
+`src/database/connection.py`(연결), `src/database/repository.py`(금융기관
+Master/Alias CRUD), `src/database/results_repository.py`(실행 이력, 정규화
+결과, Human Review, Feedback, 완전성 비교, 성능 로그 저장·조회). 전부
+SQLAlchemy ORM을 통해서만 접근하고, 문자열을 이어붙여 SQL을 만들지 않습니다.
+
+**5. 실제 생성한 DB Table**
+institution_master, institution_alias, processing_runs,
+normalization_results, human_reviews, feedback_labels,
+completeness_results, performance_logs (총 8개). `candidate_scores`,
+`model_configs`는 스키마(`src/database/models.py`)만 정의했고 아직 실제로
+쓰지는 않습니다.
+
+**6. 사용한 SQLAlchemy 구조**
+2.0 스타일 `Mapped`/`mapped_column` 선언형 ORM 모델. 세션은 요청마다
+`get_session()`으로 새로 만들고 사용 후 닫습니다 (커넥션 풀은
+`create_engine(..., pool_pre_ping=True)`).
+
+**7~8. Embedding 모델과 실행 여부**
+`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (CPU 전용,
+로컬 실행). 실제로 다운로드하고 실행했습니다 (최초 로딩 93초 실측,
+`src/embedding_service.py`).
+
+**9~10. Reranking 방식**
+Cross-Encoder가 아니라 규칙 기반 Fallback입니다 (`src/context_reranker.py`).
+혼동 방지 키워드 거부권 → Top1/Top2 margin 검사 → 금융 키워드+threshold
+확인, 순서로 조건 판단합니다. Cross-Encoder를 썼다고 주장하지 않습니다.
+
+**11. 실제 테스트한 Dataset 크기**
+성능 평가용 가상 라벨 데이터셋 26건, 대용량 테스트 10,000/100,000/300,000행
+(300,000행은 `RUN_SLOW_TESTS=1`일 때만 자동 테스트에 포함, 수동으로는 실행·측정함).
+
+**12. 실제 처리시간 (2026-08-09 측정, 이 컴퓨터 기준)**
+300,000행: FAST PATH만 0.014초, Embedding+Context Rerank 포함 전체
+파이프라인 11.73초. Embedding 모델 최초 로딩 93초(1회, 이후 캐시).
+
+**13~15. FAST PATH / AI PATH / Cache 건수 (300,000행 실측)**
+고유 (거래처, 문맥) 조합 23개만 실제로 계산됨 → 나머지 299,977행은 Polars
+join으로 재사용(broadcast). 방법별 건수는 "처리 성능" 화면에서 실행마다
+다시 확인 가능 (샘플 데이터 구성에 따라 달라짐).
+
+**16. Human Review 건수**
+자동 테스트에서 승인(APPROVE) 1건을 실제로 반영·저장하고 정리(cleanup)함.
+실사용 시 쌓이는 실제 건수는 "Feedback"/"Database 상태" 화면에서 확인합니다.
+
+**17~19. 실제 Accuracy / Precision·Recall·F1 / False Normalization Rate**
+가상 평가 데이터셋(26건) 기준, Model4(전체 파이프라인): Accuracy 0.962,
+Precision 1.000, Recall 0.944, F1 0.971, False Normalization Rate 0.000.
+Baseline1(Exact+Alias만): Accuracy 0.808, False Normalization Rate 0.000.
+전체 비교표는 위 "지금 실제로 되는 것" 섹션에 있습니다. **공식 감사기준이나
+검증된 성능 지표가 아니라, 이 가상 데이터셋에 대한 실제 계산값입니다.**
+
+**20. Completeness 비교 결과**
+샘플 회사 목록에서 KB국민은행을 의도적으로 뺀 뒤 비교하면 "추가 검토
+후보(B-A)"에 정확히 1건(KB국민은행)이 잡히는 것을 실제 화면 테스트로 확인.
+
+**21. pytest 결과**
+기본 실행 85 passed, 1 skipped. `RUN_SLOW_TESTS=1`로 전체 실행 시 86 passed.
+
+**22. PostgreSQL 연결상태**
+이 컴퓨터에는 PostgreSQL 17이 설치되어 실행 중이며 (`winget`으로 무인
+설치), 앱과 테스트 모두 `Connected` 상태로 확인됩니다.
+
+**23. 실행 명령**
+```
+.venv\Scripts\pip install --index-url https://download.pytorch.org/whl/cpu torch
+.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\streamlit run app.py
+.venv\Scripts\pytest -v
+```
+
+**24. 현재 한계**
+- Fallback Reranking 규칙(키워드 + margin)은 이번 프로젝트 중 실측으로
+  두 번 튜닝했지만, 여전히 임의의 감사기준이 아니라 조정 가능한 기본값입니다.
+- 금융기관 Master의 keywords/negative_keywords를 사람이 잘 채워야
+  Context Reranking이 제대로 동작합니다 — 비어 있으면 안전하게(검토 필요로)
+  동작하지만, 자동화율이 낮아집니다.
+- 30만 건을 PostgreSQL에 실제로 저장하는 성능은 미측정.
+- Excel 내보내기에 원본 300,000행 전체를 담으면 파일이 매우 커질 수 있는데,
+  이 부분의 실측/최적화는 하지 않았습니다.
+
+**25. 다음 개선 우선순위**
+1. `candidate_scores` 저장으로 Top-K 후보 전체를 감사인이 볼 수 있게 하기
+2. 30만 건 PostgreSQL 저장 성능 실측 및 필요시 배치 insert로 최적화
+3. Feedback Label을 이용한 오프라인 재평가(재학습까지는 아니어도, 새
+   임계값/키워드 후보 제안 정도)
+4. Excel 내보내기 대용량 최적화(스트리밍 저장 또는 요약 시트만 기본 포함)
