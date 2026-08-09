@@ -5,3 +5,7 @@ token.json
 __pycache__/
 *.pyc
 .venv/
+.pytest_cache/
+data/cache/
+data/synthetic/
+outputs/

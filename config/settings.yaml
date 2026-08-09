@@ -1,0 +1,9 @@
+app:
+  title: "금융기관명 정규화 및 완전성 검토 시스템"
+  max_preview_rows: 200
+
+synthetic_data:
+  default_rows: 500
+
+file_upload:
+  allowed_extensions: ["csv", "xlsx", "xls"]
