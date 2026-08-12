@@ -173,10 +173,15 @@ def page_upload():
         n_rows = st.number_input(
             "생성할 행 수",
             min_value=10,
-            max_value=50000,
+            max_value=1_000_000,
             value=settings["synthetic_data"]["default_rows"],
             step=10,
         )
+        if n_rows > 50_000:
+            st.caption(
+                "5만 행이 넘으면 정규화 실행 후 PostgreSQL 저장에 시간이 걸릴 수 있습니다 "
+                "(실측: 100만 행 기준 약 42초, COPY 방식)."
+            )
         if st.button("샘플 분개 생성"):
             df = generate_synthetic_journal(n_rows=int(n_rows))
             st.session_state.journal_df = df
@@ -963,7 +968,7 @@ def page_processing_performance():
     if not _show_db_connection_banner():
         return
 
-    n_rows = st.number_input("생성할 행 수", min_value=1000, max_value=300000, value=10000, step=1000)
+    n_rows = st.number_input("생성할 행 수", min_value=1000, max_value=1_000_000, value=10000, step=1000)
     use_embedding = st.checkbox("Embedding(AI PATH) 포함", value=True, key="perf_use_embedding")
 
     if st.button("대용량 처리 성능 테스트 실행"):

@@ -5,9 +5,10 @@ Human Review(human_reviews), Feedback Label(feedback_labels), 완전성 비교
 institution_master/institution_alias는 repository.py에서, 실행 결과와 사람의
 판단은 이 파일에서 다룬다 (역할 분리).
 
-지금은 ORM 객체를 하나씩 만들어 session.add_all()로 저장한다 — 수백~수천 건
-수준에서는 충분히 빠르지만, 30만 행 전체를 이 방식으로 저장하는 것은 아직
-성능 검증을 하지 않았다 (Phase 8 대용량 테스트에서 확인할 부분).
+normalization_results는 ORM 객체를 하나씩 만들어 session.add_all()로 저장하지
+않는다 — 실측해보니 100만 행 기준 그 방식은 140초, SQLAlchemy Core 일괄
+INSERT로 바꿔도 130초로 큰 차이가 없었다. psycopg의 COPY 프로토콜로 바꾼 뒤
+다시 실측한 결과는 README에 실제 값을 적어뒀다.
 """
 
 from datetime import datetime, timezone
@@ -63,16 +64,29 @@ def list_processing_runs(session: Session, limit: int = 20) -> list[ProcessingRu
 # ---------------------------------------------------------------------------
 
 
-def save_normalization_results(session: Session, run_id: int, rows: list[dict]) -> list[NormalizationResult]:
-    """정규화 결과를 run_id에 연결해서 한 번에 저장한다.
+def save_normalization_results(session: Session, run_id: int, rows: list[dict]) -> int:
+    """정규화 결과를 run_id에 연결해서 한 번에 저장한다. 저장한 행 수를 반환한다.
 
     rows의 각 dict는 NormalizationResult 컬럼명과 일치하는 키를 가져야 한다
-    (run_id는 이 함수가 채운다).
+    (run_id는 이 함수가 채운다). PostgreSQL의 COPY 프로토콜을 쓴다 — 일반
+    INSERT(한 건씩이든 Core 일괄이든)는 행마다 SQL 파싱/플래닝 비용이 들지만,
+    COPY는 스트리밍이라 그 비용이 없다. 실측 결과(100만 행)는 이 파일 상단
+    docstring과 README에 남겨뒀다.
     """
-    objects = [NormalizationResult(run_id=run_id, **row) for row in rows]
-    session.add_all(objects)
+    if not rows:
+        return 0
+
+    data_columns = list(rows[0].keys())
+    columns = ["run_id", *data_columns]
+    column_list_sql = ", ".join(columns)
+
+    raw_connection = session.connection().connection.dbapi_connection
+    with raw_connection.cursor() as cursor:
+        with cursor.copy(f"COPY normalization_results ({column_list_sql}) FROM STDIN") as copy:
+            for row in rows:
+                copy.write_row([run_id, *(row[c] for c in data_columns)])
     session.commit()
-    return objects
+    return len(rows)
 
 
 def get_normalization_results(
