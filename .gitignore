@@ -10,3 +10,4 @@ data/cache/
 data/synthetic/
 outputs/
 streamlit_run.log
+*_export.csv
