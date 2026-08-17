@@ -312,15 +312,16 @@ def page_normalization():
             st.warning(embedding_error)
         st.success(f"{result_df.height:,}행에 대해 정규화를 완료했습니다. ({elapsed_seconds:.2f}초)")
 
-        institutions_by_id = {i.institution_id: i for i in institutions}
-        persistable_rows = build_persistable_rows(
-            result_df,
-            institutions_by_id,
-            voucher_column=mapping.get("voucher_no"),
-            context_column="context_text" if has_context else None,
-        )
-        session = get_session()
+        session = None
         try:
+            institutions_by_id = {i.institution_id: i for i in institutions}
+            persistable_rows = build_persistable_rows(
+                result_df,
+                institutions_by_id,
+                voucher_column=mapping.get("voucher_no"),
+                context_column="context_text" if has_context else None,
+            )
+            session = get_session()
             run = start_processing_run(
                 session,
                 file_name=st.session_state.source_file_name or "unknown",
@@ -334,7 +335,8 @@ def page_normalization():
         except Exception as e:
             st.warning(f"결과를 PostgreSQL에 저장하지 못했습니다 (화면 표시/Human Review는 계속 동작합니다): {e}")
         finally:
-            session.close()
+            if session is not None:
+                session.close()
 
     result_df = st.session_state.normalized_df
     if result_df is not None:
