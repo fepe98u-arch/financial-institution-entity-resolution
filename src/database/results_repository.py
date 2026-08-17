@@ -159,6 +159,37 @@ def add_human_review(
     return review
 
 
+def add_human_reviews_bulk(
+    session: Session,
+    result_ids: list[int],
+    model_prediction: str | None,
+    user_decision: str | None,
+    review_action: str,
+    review_note: str | None = None,
+) -> list[HumanReview]:
+    """result_ids 전체에 같은 판단을 한 번에 저장한다 (건마다 commit하지 않음).
+
+    같은 표현이 반복되는 원본 행이 많으면(예: 100만 행 데이터에서 자주 나오는
+    거래처명은 result_id가 수만 개일 수 있다) add_human_review를 result_id마다
+    호출해서 매번 commit하면 매우 느려진다 — add_all + commit 한 번으로 바꾼다.
+    """
+    if not result_ids:
+        return []
+    reviews = [
+        HumanReview(
+            result_id=result_id,
+            model_prediction=model_prediction,
+            user_decision=user_decision,
+            review_action=review_action,
+            review_note=review_note,
+        )
+        for result_id in result_ids
+    ]
+    session.add_all(reviews)
+    session.commit()
+    return reviews
+
+
 def count_human_reviews(session: Session) -> int:
     return session.scalar(select(func.count()).select_from(HumanReview)) or 0
 

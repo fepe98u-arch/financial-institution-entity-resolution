@@ -36,7 +36,7 @@ from src.database.repository import (
 )
 from src.database.results_repository import (
     add_feedback_label,
-    add_human_review,
+    add_human_reviews_bulk,
     add_performance_log,
     apply_review_to_results,
     complete_processing_run,
@@ -483,10 +483,8 @@ def page_human_review():
                             session, result_ids, new_review_status, new_canonical, new_institution_id,
                             normalization_method="HUMAN",
                         )
-                        review_id = None
-                        for result_id in result_ids:
-                            review = add_human_review(session, result_id, model_prediction, user_decision, action)
-                            review_id = review.review_id
+                        reviews = add_human_reviews_bulk(session, result_ids, model_prediction, user_decision, action)
+                        review_id = reviews[-1].review_id if reviews else None
                         if review_id is not None:
                             add_feedback_label(
                                 session,
