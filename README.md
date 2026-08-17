@@ -245,14 +245,18 @@ tests/                          pytest 자동 테스트
    .venv\Scripts\pip install -r requirements.txt
    ```
 
-2. 화면을 실행합니다.
+2. 화면을 실행합니다. `--server.address 127.0.0.1`을 붙이면 같은 컴퓨터
+   에서만 접속할 수 있도록 막아줍니다 (붙이지 않으면 같은 네트워크의 다른
+   컴퓨터에서도 접속할 수 있어 위험합니다).
 
    ```
-   .venv\Scripts\streamlit run app.py
+   .venv\Scripts\streamlit run app.py --server.address 127.0.0.1
    ```
 
 3. 브라우저가 자동으로 열리며 `http://localhost:8501` 에서 화면을 볼 수
-   있습니다.
+   있습니다. 가장 먼저 비밀번호 입력 화면이 나옵니다 — `.env` 파일에 적어둔
+   `APP_PASSWORD` 값을 입력하면 됩니다 (`.env`에 이 값이 없으면 화면 자체가
+   열리지 않습니다 — "보안 관련 주의사항" 참고).
 
 4. 사이드바에서 순서대로 진행합니다:
    1. "금융기관 Master" → "샘플 마스터 데이터 추가" 버튼 (처음 한 번만)
@@ -418,6 +422,11 @@ ORDER BY created_at DESC;
 
 ## 보안 관련 주의사항
 
+- 이 화면은 로컬 웹 서버로 뜹니다. `.env`에 `APP_PASSWORD`를 설정해야만
+  열리며(설정 안 하면 화면 자체가 열리지 않음), 실행할 때는 항상
+  `--server.address 127.0.0.1`을 붙여서 같은 컴퓨터 밖에서는 접속할 수 없게
+  합니다. 정식 로그인 시스템은 아니고, 회계 분개 데이터를 다루는 화면이라
+  최소한의 문턱을 둔 것입니다.
 - 실제 회사 분개 데이터는 `data/synthetic/`(가상 샘플 폴더)에 절대 넣지
   않습니다.
 - 업로드한 원본 파일은 프로그램이 수정하지 않습니다. 결과는 항상 새 파일/새
@@ -541,7 +550,7 @@ Baseline1(Exact+Alias만): Accuracy 0.808, False Normalization Rate 0.000.
 ```
 .venv\Scripts\pip install --index-url https://download.pytorch.org/whl/cpu torch
 .venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\streamlit run app.py
+.venv\Scripts\streamlit run app.py --server.address 127.0.0.1
 .venv\Scripts\pytest -v
 ```
 
