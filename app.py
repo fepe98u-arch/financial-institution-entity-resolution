@@ -1,7 +1,9 @@
 """Streamlit 진입점.
 
-Phase 1 범위: 분개장 업로드, 샘플 데이터 생성, 컬럼 매핑, context_text 미리보기.
-그 외 사이드바 메뉴는 이후 Phase에서 구현되는 자리 표시(placeholder)이다.
+Phase 1~9가 모두 구현되어 PAGES_IMPLEMENTED의 메뉴는 전부 실제로 동작한다.
+PAGES_PLANNED("설정")만 아직 구현되지 않은 자리 표시(placeholder)이다 —
+threshold/embedding_floor 같은 값은 지금은 config/model_config.yaml을
+직접 편집해서 바꾼다 (화면에서 바꾸는 기능은 아직 없음).
 """
 
 import time
@@ -117,7 +119,7 @@ PAGES_PLANNED = [
 st.sidebar.title(settings["app"]["title"])
 page = st.sidebar.radio("메뉴", PAGES_IMPLEMENTED + PAGES_PLANNED)
 st.sidebar.markdown("---")
-st.sidebar.caption("현재는 Phase 1~8만 구현되어 있습니다. 그 외 메뉴는 자리 표시일 뿐 동작하지 않습니다.")
+st.sidebar.caption(f"'{PAGES_PLANNED[0]}' 메뉴만 아직 구현되지 않았습니다. 그 외 메뉴는 전부 실제로 동작합니다.")
 
 
 def page_dashboard():
