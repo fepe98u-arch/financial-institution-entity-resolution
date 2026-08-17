@@ -92,6 +92,8 @@ if "model_performance_results" not in st.session_state:
     st.session_state.model_performance_results = None
 if "processing_performance_result" not in st.session_state:
     st.session_state.processing_performance_result = None
+if "excel_bytes" not in st.session_state:
+    st.session_state.excel_bytes = None
 
 PAGES_IMPLEMENTED = [
     "Dashboard",
@@ -303,6 +305,7 @@ def page_normalization():
             )
         elapsed_seconds = time.perf_counter() - started
         st.session_state.normalized_df = result_df
+        st.session_state.excel_bytes = None
         if embedding_error:
             st.warning(embedding_error)
         st.success(f"{result_df.height:,}행에 대해 정규화를 완료했습니다. ({elapsed_seconds:.2f}초)")
@@ -350,26 +353,31 @@ def page_normalization():
         )
 
         st.subheader("Excel 다운로드")
-        institution_summary = (
-            result_df.group_by("canonical_institution")
-            .agg(pl.len().alias("건수"))
-            .filter(pl.col("canonical_institution").is_not_null())
-            .sort("건수", descending=True)
-        )
-        manual_review = result_df.filter(pl.col("review_status") == "NEEDS_REVIEW")
-        excel_bytes = build_excel_report(
-            {
-                "Normalized_Journal": result_df,
-                "Institution_Summary": institution_summary,
-                "Manual_Review": manual_review,
-            }
-        )
-        st.download_button(
-            "정규화 결과 Excel 다운로드",
-            data=excel_bytes,
-            file_name="normalization_result.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+        st.caption("행이 많으면(예: 수십만 행 이상) 생성에 시간이 걸릴 수 있어, 버튼을 누를 때만 만듭니다.")
+        if st.button("Excel 생성"):
+            with st.spinner("Excel 생성 중..."):
+                institution_summary = (
+                    result_df.group_by("canonical_institution")
+                    .agg(pl.len().alias("건수"))
+                    .filter(pl.col("canonical_institution").is_not_null())
+                    .sort("건수", descending=True)
+                )
+                manual_review = result_df.filter(pl.col("review_status") == "NEEDS_REVIEW")
+                st.session_state.excel_bytes = build_excel_report(
+                    {
+                        "Normalized_Journal": result_df,
+                        "Institution_Summary": institution_summary,
+                        "Manual_Review": manual_review,
+                    }
+                )
+
+        if st.session_state.excel_bytes is not None:
+            st.download_button(
+                "정규화 결과 Excel 다운로드",
+                data=st.session_state.excel_bytes,
+                file_name="normalization_result.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
 
 def page_human_review():
