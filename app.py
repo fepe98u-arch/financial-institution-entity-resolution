@@ -314,23 +314,24 @@ def page_normalization():
 
         session = None
         try:
-            institutions_by_id = {i.institution_id: i for i in institutions}
-            persistable_rows = build_persistable_rows(
-                result_df,
-                institutions_by_id,
-                voucher_column=mapping.get("voucher_no"),
-                context_column="context_text" if has_context else None,
-            )
-            session = get_session()
-            run = start_processing_run(
-                session,
-                file_name=st.session_state.source_file_name or "unknown",
-                file_type=st.session_state.source_file_type or "unknown",
-                total_rows=result_df.height,
-            )
-            save_normalization_results(session, run.run_id, persistable_rows)
-            complete_processing_run(session, run.run_id, processing_seconds=elapsed_seconds)
-            st.session_state.current_run_id = run.run_id
+            with st.spinner("PostgreSQL에 저장 중입니다 — 끝나기 전에 다른 메뉴로 이동하면 이번 저장이 취소됩니다..."):
+                institutions_by_id = {i.institution_id: i for i in institutions}
+                persistable_rows = build_persistable_rows(
+                    result_df,
+                    institutions_by_id,
+                    voucher_column=mapping.get("voucher_no"),
+                    context_column="context_text" if has_context else None,
+                )
+                session = get_session()
+                run = start_processing_run(
+                    session,
+                    file_name=st.session_state.source_file_name or "unknown",
+                    file_type=st.session_state.source_file_type or "unknown",
+                    total_rows=result_df.height,
+                )
+                save_normalization_results(session, run.run_id, persistable_rows)
+                complete_processing_run(session, run.run_id, processing_seconds=elapsed_seconds)
+                st.session_state.current_run_id = run.run_id
             st.caption(f"정규화 결과 {len(persistable_rows):,}행을 PostgreSQL(run_id={run.run_id})에 저장했습니다.")
         except Exception as e:
             st.warning(f"결과를 PostgreSQL에 저장하지 못했습니다 (화면 표시/Human Review는 계속 동작합니다): {e}")
