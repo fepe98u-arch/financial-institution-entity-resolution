@@ -731,9 +731,11 @@ def page_feedback():
 def page_company_list():
     st.title("회사 금융기관 목록")
     st.caption(
-        "회사가 제출한 금융기관 목록을 업로드합니다. '완전성 비교'에서 분개장(정규화 결과)과 "
-        "비교합니다. 이 목록도 분개장과 같은 정규화 파이프라인(FAST PATH + Embedding)으로 "
-        "처리됩니다. 실제 고객 데이터는 샘플 폴더에 넣지 마세요."
+        "회사가 '우리 회사는 이 금융기관들과 거래한다'고 별도로 제출한 목록을 업로드합니다 — "
+        "보통 금융기관명만 몇 건~몇백 건 나열된 짧은 파일입니다 (분개장의 거래 내역과는 다른 "
+        "파일입니다). '완전성 비교'에서 분개장(정규화 결과)과 비교합니다. 이 목록도 분개장과 "
+        "같은 정규화 파이프라인(FAST PATH + Embedding)으로 처리됩니다. 실제 고객 데이터는 "
+        "샘플 폴더에 넣지 마세요."
     )
 
     uploaded = st.file_uploader(
@@ -750,6 +752,14 @@ def page_company_list():
             st.session_state.company_result_df = None
             st.session_state.completeness_result = None
             st.success(f"{uploaded.name} 로드 완료 ({df.height:,}행 x {df.width}열)")
+            if df.height > 1000:
+                st.warning(
+                    f"{df.height:,}행이나 됩니다 — 회사가 실제로 제출하는 금융기관 목록은 보통 "
+                    "몇 건~몇백 건 수준입니다. 분개장(거래 내역) 파일을 잘못 올리신 건 아닌지 "
+                    "확인해보세요. 분개장은 '분개장 업로드' 메뉴에 올리는 파일이고, 여기는 "
+                    "'회사가 우리 회사는 이 금융기관들과 거래한다'고 별도로 제출한 목록을 올리는 "
+                    "곳입니다."
+                )
 
     df = st.session_state.company_df
     if df is None:
