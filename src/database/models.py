@@ -14,6 +14,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -80,9 +81,25 @@ class ProcessingRun(Base):
 
 
 class NormalizationResult(Base):
-    """분개별 금융기관 정규화 결과. (Phase 3~5부터 사용)"""
+    """분개별 금융기관 정규화 결과. (Phase 3~5부터 사용)
+
+    run_id 하나에 수십만~100만 건이 쌓일 수 있고, Human Review의 '적용'
+    버튼(find_result_ids)이 매번 run_id + detected_expression(+context_text)로
+    조회한다. result_id(기본키) 말고는 인덱스가 없으면 이 조회가 테이블 전체를
+    훑게 되어 행이 누적될수록(실측: 1,000만 행에서 조회 하나가 수 분씩 걸림)
+    급격히 느려진다 — 그래서 아래 인덱스를 둔다.
+    """
 
     __tablename__ = "normalization_results"
+    __table_args__ = (
+        Index("ix_normalization_results_run_id", "run_id"),
+        Index(
+            "ix_normalization_results_run_expr_context",
+            "run_id",
+            "detected_expression",
+            "context_text",
+        ),
+    )
 
     result_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     run_id: Mapped[int] = mapped_column(ForeignKey("processing_runs.run_id"), nullable=False)

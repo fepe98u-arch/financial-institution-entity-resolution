@@ -196,3 +196,80 @@ def test_add_and_list_performance_log(db_session):
     db_session.execute(delete(PerformanceLog).where(PerformanceLog.run_id == run.run_id))
     db_session.commit()
     _cleanup(db_session, run.run_id)
+
+
+def test_load_run_as_dataframe_restores_saved_columns(db_session):
+    """브라우저/서버를 껐다 켜도 저장된 실행을 다시 DataFrame으로 불러올 수 있어야 한다."""
+    from src.database.results_repository import load_run_as_dataframe, save_normalization_results, start_processing_run
+
+    run = start_processing_run(db_session, "pytest_sample.csv", "csv", total_rows=1)
+    save_normalization_results(db_session, run.run_id, _sample_rows())
+
+    loaded = load_run_as_dataframe(db_session, run.run_id)
+
+    assert loaded.height == 1
+    row = loaded.to_dicts()[0]
+    assert row["detected_expression"] == "농협"
+    assert row["canonical_institution"] == "NH농협은행"
+    assert row["normalization_method"] == "FUZZY"
+    assert row["review_status"] == "AUTO"
+    assert row["context_text"] == "농협 | 대출이자 지급 | 이자비용 | 장기차입금"
+    assert row["top1_score"] == pytest.approx(90.0)
+
+    _cleanup(db_session, run.run_id)
+
+
+def test_load_run_as_dataframe_empty_for_unknown_run():
+    from src.database.connection import get_session
+    from src.database.results_repository import load_run_as_dataframe
+
+    session = get_session()
+    try:
+        loaded = load_run_as_dataframe(session, run_id=-1)
+        assert loaded.height == 0
+    finally:
+        session.close()
+
+
+def test_delete_processing_run_cascades_but_keeps_feedback_labels(db_session):
+    """실행을 지우면 결과/Human Review는 지워지지만, feedback_labels는 남아야 한다
+    (향후 모델 개선용으로 계속 쌓아두는 목적이기 때문 -- source_review_id만 끊긴다)."""
+    from src.database.results_repository import (
+        add_feedback_label,
+        add_human_review,
+        delete_processing_run,
+        find_result_ids,
+        save_normalization_results,
+        start_processing_run,
+    )
+
+    run = start_processing_run(db_session, "pytest_delete.csv", "csv", total_rows=1)
+    save_normalization_results(db_session, run.run_id, _sample_rows())
+    result_ids = find_result_ids(db_session, run.run_id, "농협", "농협 | 대출이자 지급 | 이자비용 | 장기차입금")
+
+    review = add_human_review(db_session, result_ids[0], "NH농협은행", "NH농협은행", "APPROVE")
+    review_id = review.review_id
+    label = add_feedback_label(
+        db_session,
+        original_expression="농협",
+        context_text="농협 | 대출이자 지급 | 이자비용 | 장기차입금",
+        model_prediction="NH농협은행",
+        confirmed_label="NH농협은행",
+        source_review_id=review_id,
+    )
+    label_id = label.label_id
+
+    deleted_count = delete_processing_run(db_session, run.run_id)
+    assert deleted_count == 1
+
+    assert db_session.get(ProcessingRun, run.run_id) is None
+    assert db_session.get(NormalizationResult, result_ids[0]) is None
+    assert db_session.get(HumanReview, review_id) is None
+
+    remaining_label = db_session.get(FeedbackLabel, label_id)
+    assert remaining_label is not None
+    assert remaining_label.confirmed_label == "NH농협은행"
+    assert remaining_label.source_review_id is None
+
+    db_session.execute(delete(FeedbackLabel).where(FeedbackLabel.label_id == label_id))
+    db_session.commit()

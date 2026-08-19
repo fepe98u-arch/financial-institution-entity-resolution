@@ -42,8 +42,10 @@ from src.database.results_repository import (
     complete_processing_run,
     count_feedback_labels,
     count_human_reviews,
+    delete_processing_run,
     find_result_ids,
     list_processing_runs,
+    load_run_as_dataframe,
     save_completeness_results,
     save_normalization_results,
     start_processing_run,
@@ -683,6 +685,46 @@ def page_database_status():
                 ],
                 use_container_width=True,
             )
+
+            st.subheader("저장된 실행 불러오기 / 삭제")
+            st.caption(
+                "예전에 정규화까지 실행했던 결과를 다시 불러와서 Human Review를 이어서 할 수 있습니다. "
+                "브라우저를 껐다 켜거나 서버를 재시작해도 PostgreSQL에는 남아있으니, 분개장을 다시 "
+                "올리고 정규화를 처음부터 다시 돌릴 필요가 없습니다. 다만 거래처명·정규화 결과·검토 "
+                "상태만 저장되어 있고, 원본 분개장의 금액/날짜 같은 다른 컬럼은 저장되지 않으므로 "
+                "완전성 비교의 금액 합계처럼 원본 컬럼이 필요한 기능은 불러온 결과에서는 동작하지 않습니다."
+            )
+            run_options = {
+                f"run_id={r.run_id} | {r.file_name} | {r.total_rows:,}행 | {r.status} | {r.created_at:%Y-%m-%d %H:%M}": r
+                for r in runs[:20]
+            }
+            selected_label = st.selectbox("실행 선택", list(run_options.keys()), key="saved_run_select")
+            selected_run = run_options[selected_label]
+
+            col_load, col_delete = st.columns(2)
+            with col_load:
+                if st.button("이 실행 불러오기"):
+                    with st.spinner("불러오는 중..."):
+                        loaded_df = load_run_as_dataframe(session, selected_run.run_id)
+                    if loaded_df.height == 0:
+                        st.warning("이 실행에 저장된 결과가 없습니다.")
+                    else:
+                        st.session_state.normalized_df = loaded_df
+                        st.session_state.current_run_id = selected_run.run_id
+                        st.session_state.source_file_name = selected_run.file_name
+                        st.session_state.source_file_type = selected_run.file_type
+                        st.session_state.excel_bytes = None
+                        st.success(
+                            f"run_id={selected_run.run_id} 불러왔습니다 ({loaded_df.height:,}행). "
+                            "'Human Review'나 '금융기관 정규화'에서 이어서 보실 수 있습니다."
+                        )
+            with col_delete:
+                if st.button("이 실행 삭제", type="secondary"):
+                    deleted = delete_processing_run(session, selected_run.run_id)
+                    if st.session_state.current_run_id == selected_run.run_id:
+                        st.session_state.current_run_id = None
+                    st.success(f"run_id={selected_run.run_id} 삭제했습니다 (정규화 결과 {deleted:,}건 포함).")
+                    st.rerun()
     finally:
         session.close()
 

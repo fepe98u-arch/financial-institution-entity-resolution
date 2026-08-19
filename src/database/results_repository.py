@@ -13,10 +13,12 @@ INSERT로 바꿔도 130초로 큰 차이가 없었다. psycopg의 COPY 프로토
 
 from datetime import datetime, timezone
 
-from sqlalchemy import delete, func, select
+import polars as pl
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from src.database.models import (
+    CandidateScore,
     CompletenessResult,
     FeedbackLabel,
     HumanReview,
@@ -57,6 +59,71 @@ def complete_processing_run(session: Session, run_id: int, processing_seconds: f
 def list_processing_runs(session: Session, limit: int = 20) -> list[ProcessingRun]:
     stmt = select(ProcessingRun).order_by(ProcessingRun.created_at.desc()).limit(limit)
     return list(session.scalars(stmt))
+
+
+def load_run_as_dataframe(session: Session, run_id: int) -> pl.DataFrame:
+    """저장된 normalization_results를 다시 Polars DataFrame으로 불러온다 (실행 이어하기용).
+
+    원본 분개장의 다른 컬럼(금액/날짜 등)은 애초에 저장하지 않으므로 되살릴 수
+    없다 — 여기서 복원되는 것은 거래처 표현·문맥·정규화 결과·검토 상태뿐이다.
+    그래도 Human Review/Dashboard/정규화 결과 미리보기는 이 컬럼들만으로 동작한다.
+    완전성 비교의 금액 합계처럼 원본 컬럼이 필요한 기능은 이 방식으로 불러온
+    결과에서는 동작하지 않는다.
+    """
+    stmt = select(NormalizationResult).where(NormalizationResult.run_id == run_id)
+    rows = session.scalars(stmt).all()
+    if not rows:
+        return pl.DataFrame()
+
+    return pl.DataFrame(
+        {
+            "original_row_id": [r.original_row_id for r in rows],
+            "detected_expression": [r.detected_expression for r in rows],
+            "normalized_expression": [r.normalized_expression for r in rows],
+            "canonical_institution": [r.canonical_institution for r in rows],
+            "institution_id": [r.institution_id for r in rows],
+            "institution_type": [r.institution_type for r in rows],
+            "normalization_method": [r.normalization_method for r in rows],
+            "top1_score": [float(r.top1_score) if r.top1_score is not None else None for r in rows],
+            "top2_candidate": [r.top2_candidate for r in rows],
+            "top2_score": [float(r.top2_score) if r.top2_score is not None else None for r in rows],
+            "score_margin": [float(r.score_margin) if r.score_margin is not None else None for r in rows],
+            "review_status": [r.review_status for r in rows],
+            "context_text": [r.context_text for r in rows],
+            "reason": [r.reason for r in rows],
+            "user_confirmed": [r.user_confirmed for r in rows],
+        }
+    )
+
+
+def delete_processing_run(session: Session, run_id: int) -> int:
+    """run_id에 딸린 저장 결과를 전부 지운다 (사용자가 직접 정리할 수 있게).
+
+    feedback_labels는 지우지 않는다 — 실행을 지워도 사람이 이미 확정한 라벨은
+    향후 모델 개선용으로 계속 남겨두는 게 이 테이블의 목적이기 때문이다.
+    다만 그 라벨이 가리키던 human_reviews 행은 같이 지워지므로,
+    source_review_id는 참조가 끊기지 않도록 NULL로 바꾼다.
+
+    Returns: 삭제한 normalization_results 행 수.
+    """
+    result_id_subq = select(NormalizationResult.result_id).where(NormalizationResult.run_id == run_id)
+    review_id_subq = select(HumanReview.review_id).where(HumanReview.result_id.in_(result_id_subq))
+
+    session.execute(
+        update(FeedbackLabel).where(FeedbackLabel.source_review_id.in_(review_id_subq)).values(source_review_id=None)
+    )
+    session.execute(delete(HumanReview).where(HumanReview.result_id.in_(result_id_subq)))
+    session.execute(delete(CandidateScore).where(CandidateScore.result_id.in_(result_id_subq)))
+    session.execute(delete(CompletenessResult).where(CompletenessResult.run_id == run_id))
+    session.execute(delete(PerformanceLog).where(PerformanceLog.run_id == run_id))
+    deleted_count = (
+        session.scalar(select(func.count()).select_from(NormalizationResult).where(NormalizationResult.run_id == run_id))
+        or 0
+    )
+    session.execute(delete(NormalizationResult).where(NormalizationResult.run_id == run_id))
+    session.execute(delete(ProcessingRun).where(ProcessingRun.run_id == run_id))
+    session.commit()
+    return deleted_count
 
 
 # ---------------------------------------------------------------------------
