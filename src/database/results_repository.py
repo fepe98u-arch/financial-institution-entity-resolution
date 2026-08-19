@@ -14,7 +14,7 @@ INSERT로 바꿔도 130초로 큰 차이가 없었다. psycopg의 COPY 프로토
 from datetime import datetime, timezone
 
 import polars as pl
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import any_, delete, func, select, update
 from sqlalchemy.orm import Session
 
 from src.database.models import (
@@ -188,15 +188,31 @@ def apply_review_to_results(
     institution_id: int | None,
     normalization_method: str = "HUMAN",
 ) -> None:
+    """result_ids 전체에 사람의 판단을 한 번에 반영한다 (건마다 ORM 객체를 불러와 고치지 않음).
+
+    자주 나오는 거래처 표현 하나가 원본 분개 수만~수십만 건과 매칭될 수 있다
+    (실측: 100만 행 데이터에서 "샘플물류" 하나가 69,660건). 예전 방식(전부
+    조회해서 객체별로 값을 바꾼 뒤 한 번에 commit)은 여전히 건마다 UPDATE를
+    보내야 해서 느렸다 — SQL UPDATE 한 문장으로 바꾼다.
+
+    result_id.in_(result_ids)는 값 하나하나를 바인드 파라미터로 펼치는데,
+    result_ids가 PostgreSQL의 파라미터 개수 제한(65,535개)을 넘으면 그 자체로
+    오류가 난다 (실측: 69,660건에서 발생). result_ids를 배열 하나로 통째로
+    넘기는 `= ANY(...)`로 바꿔서 이 문제를 피한다.
+    """
     if not result_ids:
         return
-    stmt = select(NormalizationResult).where(NormalizationResult.result_id.in_(result_ids))
-    for result in session.scalars(stmt):
-        result.review_status = review_status
-        result.canonical_institution = canonical_institution
-        result.institution_id = institution_id
-        result.normalization_method = normalization_method
-        result.user_confirmed = True
+    session.execute(
+        update(NormalizationResult)
+        .where(NormalizationResult.result_id == any_(result_ids))
+        .values(
+            review_status=review_status,
+            canonical_institution=canonical_institution,
+            institution_id=institution_id,
+            normalization_method=normalization_method,
+            user_confirmed=True,
+        )
+    )
     session.commit()
 
 

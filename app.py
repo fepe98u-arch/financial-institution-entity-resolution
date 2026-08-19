@@ -476,32 +476,38 @@ def page_human_review():
                 if run_id is None:
                     st.success("반영했습니다. (이번 실행은 PostgreSQL에 저장되지 않아 화면 세션에만 반영됨)")
                 else:
-                    session = get_session()
+                    session = None
                     try:
-                        result_ids = find_result_ids(
-                            session, run_id, row["detected_expression"], row.get("context_text") if has_context else None
-                        )
-                        new_review_status = "AUTO" if action in ("APPROVE", "CHANGE_INSTITUTION") else action
-                        apply_review_to_results(
-                            session, result_ids, new_review_status, new_canonical, new_institution_id,
-                            normalization_method="HUMAN",
-                        )
-                        reviews = add_human_reviews_bulk(session, result_ids, model_prediction, user_decision, action)
-                        review_id = reviews[-1].review_id if reviews else None
-                        if review_id is not None:
-                            add_feedback_label(
-                                session,
-                                original_expression=row["detected_expression"],
-                                context_text=row.get("context_text") if has_context else None,
-                                model_prediction=model_prediction,
-                                confirmed_label=user_decision,
-                                source_review_id=review_id,
+                        with st.spinner(
+                            "PostgreSQL에 저장 중입니다 — 같은 표현이 원본 분개에 많이 나올수록 "
+                            "오래 걸릴 수 있습니다. 끝나기 전에 다른 항목을 조작하면 이번 저장이 취소됩니다..."
+                        ):
+                            session = get_session()
+                            result_ids = find_result_ids(
+                                session, run_id, row["detected_expression"], row.get("context_text") if has_context else None
                             )
-                        st.success(f"반영했습니다. (PostgreSQL human_reviews/feedback_labels에 저장, {len(result_ids)}건)")
+                            new_review_status = "AUTO" if action in ("APPROVE", "CHANGE_INSTITUTION") else action
+                            apply_review_to_results(
+                                session, result_ids, new_review_status, new_canonical, new_institution_id,
+                                normalization_method="HUMAN",
+                            )
+                            reviews = add_human_reviews_bulk(session, result_ids, model_prediction, user_decision, action)
+                            review_id = reviews[-1].review_id if reviews else None
+                            if review_id is not None:
+                                add_feedback_label(
+                                    session,
+                                    original_expression=row["detected_expression"],
+                                    context_text=row.get("context_text") if has_context else None,
+                                    model_prediction=model_prediction,
+                                    confirmed_label=user_decision,
+                                    source_review_id=review_id,
+                                )
+                        st.success(f"반영했습니다. (PostgreSQL human_reviews/feedback_labels에 저장, {len(result_ids):,}건)")
                     except Exception as e:
                         st.warning(f"화면에는 반영했지만 PostgreSQL 저장에는 실패했습니다: {e}")
                     finally:
-                        session.close()
+                        if session is not None:
+                            session.close()
 
 
 def _show_db_connection_banner() -> bool:
